@@ -1,15 +1,16 @@
 {
   "name": "telegram-bot-maker",
   "version": "1.0.0",
-  "main": "bot.js",
+  "main": "maker.js",
   "dependencies": {
     "telegraf": "^4.12.2",
+    "mongoose": "^7.0.0",
     "axios": "^1.6.8"
   },
   "engines": {
     "node": "18.x"
   },
   "scripts": {
-    "start": "node bot.js"
+    "start": "node maker.js"
   }
 }
