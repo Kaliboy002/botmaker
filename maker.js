@@ -28,8 +28,8 @@ const UserSchema = new mongoose.Schema({
   step: { type: String, default: 'none' },
   adminState: { type: String, default: 'none' },
   isBlocked: { type: Boolean, default: false },
-  username: { type: String }, // Added to store username
-  referredBy: { type: String, default: 'None' }, // Added for referral tracking
+  username: { type: String },
+  referredBy: { type: String, default: 'None' },
 });
 
 const BotSchema = new mongoose.Schema({
@@ -45,6 +45,7 @@ const BotUserSchema = new mongoose.Schema({
   userId: { type: String, required: true },
   hasJoined: { type: Boolean, default: false },
   step: { type: String, default: 'none' },
+  isBlocked: { type: Boolean, default: false }, // Added for Created Bot users
 });
 
 const ChannelUrlSchema = new mongoose.Schema({
@@ -186,11 +187,11 @@ const broadcastSubMessage = async (message, adminId) => {
   for (const botInfo of bots) {
     const botToken = botInfo.token;
     const bot = new Telegraf(botToken);
-    const targetUsers = await BotUser.find({ botToken, hasJoined: true, isBlocked: false }).lean();
+    const targetUsers = await BotUser.find({ botToken, hasJoined: true, isBlocked: false }).lean(); // Exclude blocked users
 
     if (targetUsers.length === 0) continue;
 
-    const { successCount, failCount } = await broadcastMessage(bot, message, targetUsers, adminId);
+    const { successCount, failCount } = await broadcastMessage(bot, message, targetUsers, adminId); // Use broadcastMessage to support all types
     totalSuccess += successCount;
     totalFail += failCount;
 
@@ -219,8 +220,8 @@ const getRelativeTime = (timestamp) => {
 makerBot.start(async (ctx) => {
   const userId = ctx.from.id.toString();
   try {
-    const user = await User.findOne({ userId });
-    if (user && user.isBlocked) {
+    const existingUser = await User.findOne({ userId });
+    if (existingUser && existingUser.isBlocked) {
       ctx.reply('🚫 You have been banned by the admin.');
       return;
     }
@@ -228,20 +229,33 @@ makerBot.start(async (ctx) => {
     const username = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
     const referredBy = ctx.message.text.split(' ')[1] || 'None';
 
-    await User.findOneAndUpdate(
-      { userId },
-      { userId, step: 'none', adminState: 'none', isBlocked: false, username, referredBy },
-      { upsert: true, new: true }
-    );
+    // Check if user already exists to avoid multiple notifications
+    if (!existingUser) {
+      await User.create({
+        userId,
+        step: 'none',
+        adminState: 'none',
+        isBlocked: false,
+        username,
+        referredBy,
+      });
 
-    // Send notification to owner
-    const totalUsers = await User.countDocuments({ isBlocked: false });
-    const notification = `➕ New User Notification ➕\n` +
-                        `👤 User: ${username}\n` +
-                        `🆔 User ID: ${userId}\n` +
-                        `⭐ Referred By: ${referredBy}\n` +
-                        `📊 Total Users of Bot Maker: ${totalUsers}`;
-    await makerBot.telegram.sendMessage(OWNER_ID, notification);
+      // Send notification to owner (only for first-time users)
+      const totalUsers = await User.countDocuments({ isBlocked: false });
+      const notification = `➕ New User Notification ➕\n` +
+                          `👤 User: ${username}\n` +
+                          `🆔 User ID: ${userId}\n` +
+                          `⭐ Referred By: ${referredBy}\n` +
+                          `📊 Total Users of Bot Maker: ${totalUsers}`;
+      await makerBot.telegram.sendMessage(OWNER_ID, notification);
+    } else {
+      // Update existing user without sending notification
+      await User.findOneAndUpdate(
+        { userId },
+        { username, referredBy },
+        { new: true }
+      );
+    }
 
     ctx.reply('Welcome to Bot Maker! Use the buttons below to create and manage your Telegram bots.', mainMenu);
   } catch (error) {
@@ -441,7 +455,7 @@ makerBot.on('text', async (ctx) => {
         return;
       }
 
-      const targetUsers = await User.find({ isBlocked: false });
+      const targetUsers = await User.find({ isBlocked: false }); // Exclude blocked users
       const { successCount, failCount } = await broadcastMessage(makerBot, message, targetUsers, userId);
 
       ctx.reply(
@@ -493,8 +507,7 @@ makerBot.on('text', async (ctx) => {
 
       const targetUser = await User.findOne({ userId: targetUserId });
       if (!targetUser) {
-        ctx.reply('❌ User not found.', ownerAdminPanel);
-        await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
+        ctx.reply('❌ User not found.', cancelKeyboard);
         return;
       }
 
@@ -519,8 +532,7 @@ makerBot.on('text', async (ctx) => {
 
       const targetUser = await User.findOne({ userId: targetUserId });
       if (!targetUser) {
-        ctx.reply('❌ User not found.', ownerAdminPanel);
-        await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
+        ctx.reply('❌ User not found.', cancelKeyboard);
         return;
       }
 
@@ -540,8 +552,7 @@ makerBot.on('text', async (ctx) => {
       const botToken = text.trim();
       const bot = await Bot.findOne({ token: botToken });
       if (!bot) {
-        ctx.reply('❌ Bot token not found.', ownerAdminPanel);
-        await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
+        ctx.reply('❌ Bot token not found.', cancelKeyboard);
         return;
       }
 
@@ -624,6 +635,7 @@ makerBot.on('text', async (ctx) => {
   } catch (error) {
     console.error('Error in text handler:', error);
     ctx.reply('❌ An error occurred. Please try again.', mainMenu);
+    await User.findOneAndUpdate({ userId }, { step: 'none', adminState: 'none' });
   }
 });
 
