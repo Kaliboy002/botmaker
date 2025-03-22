@@ -223,17 +223,24 @@ makerBot.on('text', async (ctx) => {
 // /clear Command (Owner Only)
 makerBot.command('clear', async (ctx) => {
   const userId = ctx.from.id.toString();
+  console.log(`Received /clear from userId: ${userId}, OWNER_ID: ${OWNER_ID}`); // Debug log
   if (userId !== OWNER_ID) {
+    console.log('Unauthorized access to /clear');
     ctx.reply('❌ You are not authorized to use this command.');
     return;
   }
 
-  await Bot.deleteMany({});
-  await BotUser.deleteMany({});
-  await ChannelUrl.deleteMany({});
-  await User.deleteMany({});
-
-  ctx.reply('✅ All data has been cleared. Bot Maker is reset.');
+  try {
+    await Bot.deleteMany({});
+    await BotUser.deleteMany({});
+    await ChannelUrl.deleteMany({});
+    await User.deleteMany({});
+    console.log('All data cleared successfully');
+    ctx.reply('✅ All data has been cleared. Bot Maker is reset.');
+  } catch (error) {
+    console.error('Error during /clear:', error);
+    ctx.reply('❌ Failed to clear data. Please try again.');
+  }
 });
 
 // Vercel Handler
