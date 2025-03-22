@@ -29,8 +29,9 @@ const BotUserSchema = new mongoose.Schema({
   userId: { type: String, required: true },
   hasJoined: { type: Boolean, default: false },
   userStep: { type: String, default: 'none' },
-  adminState: { type: String, default: 'none' }, // Added for admin panel state
+  adminState: { type: String, default: 'none' },
   lastInteraction: { type: Number, default: () => Math.floor(Date.now() / 1000) },
+  isBlocked: { type: Boolean, default: false }, // Added for blocking users
 });
 
 BotUserSchema.index({ botToken: 1, userId: 1 }, { unique: true });
@@ -45,13 +46,14 @@ const Bot = mongoose.model('Bot', BotSchema);
 const BotUser = mongoose.model('BotUser', BotUserSchema);
 const ChannelUrl = mongoose.model('ChannelUrl', ChannelUrlSchema);
 
-// Admin Panel Keyboard (same as original)
+// Admin Panel Keyboard (Updated with Block button)
 const adminPanel = {
   reply_markup: {
     keyboard: [
       [{ text: '📊 Statistics' }],
       [{ text: '📍 Broadcast' }],
       [{ text: '🔗 Set Channel URL' }],
+      [{ text: '🚫 Block' }],
       [{ text: '↩️ Back' }],
     ],
     resize_keyboard: true,
@@ -141,11 +143,16 @@ module.exports = async (req, res) => {
     // Initialize Bot User
     let botUser = await BotUser.findOne({ botToken, userId: fromId });
     if (!botUser) {
-      botUser = await BotUser.create({ botToken, userId: fromId, hasJoined: false, userStep: 'none', adminState: 'none' });
+      botUser = await BotUser.create({ botToken, userId: fromId, hasJoined: false, userStep: 'none', adminState: 'none', isBlocked: false });
     }
 
     botUser.lastInteraction = Math.floor(Date.now() / 1000);
     await botUser.save();
+
+    if (botUser.isBlocked && fromId !== botInfo.creatorId) {
+      bot.telegram.sendMessage(chatId, '🚫 You have been banned by the admin.');
+      return res.status(200).json({ ok: true });
+    }
 
     const channelUrl = await getChannelUrl(botToken);
 
@@ -209,6 +216,13 @@ module.exports = async (req, res) => {
           );
           botUser.adminState = 'awaiting_channel';
           await botUser.save();
+        } else if (text === '🚫 Block') {
+          await bot.telegram.sendMessage(chatId,
+            '🚫 Enter the user ID of the account you want to block from this bot:',
+            cancelKeyboard
+          );
+          botUser.adminState = 'awaiting_block';
+          await botUser.save();
         } else if (text === '↩️ Back') {
           await bot.telegram.sendMessage(chatId, '↩️ Returned to normal mode.', {
             reply_markup: { remove_keyboard: true },
@@ -227,7 +241,7 @@ module.exports = async (req, res) => {
           return;
         }
 
-        const targetUsers = await BotUser.find({ botToken, hasJoined: true });
+        const targetUsers = await BotUser.find({ botToken, hasJoined: true, isBlocked: false });
         const { successCount, failCount } = await broadcastMessage(bot, message, targetUsers, fromId);
 
         await bot.telegram.sendMessage(chatId,
@@ -270,6 +284,40 @@ module.exports = async (req, res) => {
         );
 
         await bot.telegram.sendMessage(chatId, `✅ Channel URL has been set to:\n${correctedUrl}`, adminPanel);
+        botUser.adminState = 'admin_panel';
+        await botUser.save();
+      }
+
+      // Handle Block Input
+      else if (fromId === botInfo.creatorId && botUser.adminState === 'awaiting_block') {
+        if (text === 'Cancel') {
+          await bot.telegram.sendMessage(chatId, '↩️ Block action cancelled.', adminPanel);
+          botUser.adminState = 'admin_panel';
+          await botUser.save();
+          return;
+        }
+
+        const targetUserId = text.trim();
+        if (!/^\d+$/.test(targetUserId)) {
+          await bot.telegram.sendMessage(chatId, '❌ Invalid user ID. Please provide a numeric user ID.', cancelKeyboard);
+          return;
+        }
+
+        if (targetUserId === fromId) {
+          await bot.telegram.sendMessage(chatId, '❌ You cannot block yourself.', cancelKeyboard);
+          return;
+        }
+
+        const targetUser = await BotUser.findOne({ botToken, userId: targetUserId });
+        if (!targetUser) {
+          await bot.telegram.sendMessage(chatId, '❌ User not found in this bot.', adminPanel);
+          botUser.adminState = 'admin_panel';
+          await botUser.save();
+          return;
+        }
+
+        await BotUser.findOneAndUpdate({ botToken, userId: targetUserId }, { isBlocked: true });
+        await bot.telegram.sendMessage(chatId, `✅ User ${targetUserId} has been blocked from this bot.`, adminPanel);
         botUser.adminState = 'admin_panel';
         await botUser.save();
       }
