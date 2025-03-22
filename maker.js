@@ -1,8 +1,13 @@
 const { Telegraf } = require('telegraf');
 const mongoose = require('mongoose');
 const axios = require('axios');
+const fs = require('fs');
 
-// Initialize Maker Bot
+// Load Configurations
+const mainConfig = JSON.parse(fs.readFileSync('config/mainConfig.json', 'utf8'));
+const keyboardConfig = JSON.parse(fs.readFileSync('config/keyboardConfig.json', 'utf8'));
+
+// Environment Variables
 const MAKER_BOT_TOKEN = process.env.MAKER_BOT_TOKEN;
 const MONGO_URI = process.env.MONGO_URI;
 const OWNER_ID = process.env.OWNER_ID;
@@ -24,47 +29,21 @@ mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
 
 // MongoDB Schemas
 const UserSchema = new mongoose.Schema({
-  userId: { type: String, required: true, unique: true },
+  userId: { type: String, required: true, unique: true, index: true },
   step: { type: String, default: 'none' },
 });
 
 const BotSchema = new mongoose.Schema({
-  token: { type: String, required: true, unique: true },
+  token: { type: String, required: true, unique: true, index: true },
   username: { type: String, required: true },
-  creatorId: { type: String, required: true },
+  creatorId: { type: String, required: true, index: true },
   createdAt: { type: Number, default: () => Math.floor(Date.now() / 1000) },
-});
-
-const BotUserSchema = new mongoose.Schema({
-  botToken: { type: String, required: true },
-  userId: { type: String, required: true },
-  hasJoined: { type: Boolean, default: false },
-  step: { type: String, default: 'none' },
-});
-
-const ChannelUrlSchema = new mongoose.Schema({
-  botToken: { type: String, required: true, unique: true },
-  url: { type: String, default: 'https://t.me/Kali_Linux_BOTS' },
 });
 
 const User = mongoose.model('User', UserSchema);
 const Bot = mongoose.model('Bot', BotSchema);
-const BotUser = mongoose.model('BotUser', BotUserSchema);
-const ChannelUrl = mongoose.model('ChannelUrl', ChannelUrlSchema);
 
-// Main Menu (Keyboard)
-const mainMenu = {
-  reply_markup: {
-    keyboard: [
-      [{ text: '🛠 Create Bot' }],
-      [{ text: '🗑️ Delete Bot' }],
-      [{ text: '📋 My Bots' }],
-    ],
-    resize_keyboard: true,
-  },
-};
-
-// Validate Bot Token
+// Helper Functions
 const validateBotToken = async (token) => {
   try {
     const response = await axios.get(`https://api.telegram.org/bot${token}/getMe`);
@@ -75,7 +54,6 @@ const validateBotToken = async (token) => {
   }
 };
 
-// Set Webhook for Created Bot
 const setWebhook = async (token) => {
   const webhookUrl = `https://botmaker-two.vercel.app/created?token=${encodeURIComponent(token)}`;
   try {
@@ -89,7 +67,6 @@ const setWebhook = async (token) => {
   }
 };
 
-// Delete Webhook
 const deleteWebhook = async (token) => {
   try {
     const response = await axios.get(`https://api.telegram.org/bot${token}/deleteWebhook`);
@@ -100,7 +77,7 @@ const deleteWebhook = async (token) => {
   }
 };
 
-// /start Command
+// Bot Commands and Handlers
 makerBot.start(async (ctx) => {
   const userId = ctx.from.id.toString();
   try {
@@ -109,104 +86,95 @@ makerBot.start(async (ctx) => {
       { userId, step: 'none' },
       { upsert: true, new: true }
     );
-    ctx.reply('Welcome to Bot Maker! Use the buttons below to create and manage your Telegram bots.', mainMenu);
+    ctx.reply('Welcome to Bot Maker! Use the buttons below to create and manage your Telegram bots.', keyboardConfig.mainMenu);
   } catch (error) {
     console.error('Error in /start:', error);
     ctx.reply('❌ An error occurred. Please try again.');
   }
 });
 
-// Create Bot
 makerBot.hears('🛠 Create Bot', async (ctx) => {
   const userId = ctx.from.id.toString();
   try {
-    ctx.reply('Send your bot token from @BotFather to make your bot:', {
-      reply_markup: {
-        keyboard: [[{ text: 'Back' }]],
-        resize_keyboard: true,
-      },
-    });
     await User.findOneAndUpdate({ userId }, { step: 'create_bot' });
+    ctx.reply('Send your bot token from @BotFather to create your bot:', keyboardConfig.back);
   } catch (error) {
     console.error('Error in Create Bot:', error);
-    ctx.reply('❌ An error occurred. Please try again.', mainMenu);
+    ctx.reply('❌ An error occurred. Please try again.', keyboardConfig.mainMenu);
   }
 });
 
-// Delete Bot
 makerBot.hears('🗑️ Delete Bot', async (ctx) => {
   const userId = ctx.from.id.toString();
   try {
-    ctx.reply('Send your created bot token you want to delete:', {
-      reply_markup: {
-        keyboard: [[{ text: 'Back' }]],
-        resize_keyboard: true,
-      },
-    });
     await User.findOneAndUpdate({ userId }, { step: 'delete_bot' });
+    ctx.reply('Send the bot token you want to delete:', keyboardConfig.back);
   } catch (error) {
     console.error('Error in Delete Bot:', error);
-    ctx.reply('❌ An error occurred. Please try again.', mainMenu);
+    ctx.reply('❌ An error occurred. Please try again.', keyboardConfig.mainMenu);
   }
 });
 
-// List My Bots
 makerBot.hears('📋 My Bots', async (ctx) => {
   const userId = ctx.from.id.toString();
   try {
-    const userBots = await Bot.find({ creatorId: userId });
+    const userBots = await Bot.find({ creatorId: userId }).lean();
     let message = '📋 Your Bots:\n\n';
     if (userBots.length === 0) {
       message += 'You have not created any bots yet.';
     } else {
       userBots.forEach((bot) => {
-        const createdAt = new Date(bot.createdAt * 1000).toISOString();
+        const createdAt = new Date(bot.createdAt * 1000).toLocaleString();
         message += `🤖 @${bot.username}\nCreated At: ${createdAt}\n\n`;
       });
     }
-    ctx.reply(message, mainMenu);
+    ctx.reply(message, keyboardConfig.mainMenu);
   } catch (error) {
     console.error('Error in My Bots:', error);
-    ctx.reply('❌ An error occurred. Please try again.', mainMenu);
+    ctx.reply('❌ An error occurred. Please try again.', keyboardConfig.mainMenu);
   }
 });
 
-// Handle Text Input
+makerBot.hears('Back', async (ctx) => {
+  const userId = ctx.from.id.toString();
+  try {
+    await User.findOneAndUpdate({ userId }, { step: 'none' });
+    ctx.reply('↩️ Back to main menu.', keyboardConfig.mainMenu);
+  } catch (error) {
+    console.error('Error in Back:', error);
+    ctx.reply('❌ An error occurred. Please try again.', keyboardConfig.mainMenu);
+  }
+});
+
 makerBot.on('text', async (ctx) => {
   const userId = ctx.from.id.toString();
   const text = ctx.message.text;
+  if (text === 'Back') return; // Handled by hears
+
   try {
     const user = await User.findOne({ userId });
     if (!user) {
-      ctx.reply('Please start the bot with /start.', mainMenu);
-      return;
-    }
-
-    if (text === 'Back') {
-      ctx.reply('↩️ Back to main menu.', mainMenu);
-      await User.findOneAndUpdate({ userId }, { step: 'none' });
+      ctx.reply('Please start the bot with /start.', keyboardConfig.mainMenu);
       return;
     }
 
     if (user.step === 'create_bot') {
       const botInfo = await validateBotToken(text);
       if (!botInfo) {
-        ctx.reply('❌ Invalid bot token. Please try again:', {
-          reply_markup: { keyboard: [[{ text: 'Back' }]], resize_keyboard: true },
-        });
+        ctx.reply('❌ Invalid bot token. Please try again:', keyboardConfig.back);
         return;
       }
 
       const existingBot = await Bot.findOne({ token: text });
       if (existingBot) {
-        ctx.reply('❌ This bot token is already in use.', mainMenu);
+        ctx.reply('❌ This bot token is already in use.', keyboardConfig.mainMenu);
         await User.findOneAndUpdate({ userId }, { step: 'none' });
         return;
       }
 
       const webhookSet = await setWebhook(text);
       if (!webhookSet) {
-        ctx.reply('❌ Failed to set up the bot. Please try again.', mainMenu);
+        ctx.reply('❌ Failed to set up the bot. Please try again.', keyboardConfig.mainMenu);
         await User.findOneAndUpdate({ userId }, { step: 'none' });
         return;
       }
@@ -217,49 +185,38 @@ makerBot.on('text', async (ctx) => {
         creatorId: userId,
       });
 
-      ctx.reply(
-        `✅ Your bot @${botInfo.username} made successfully! Send /panel to manage it.`,
-        mainMenu
-      );
+      ctx.reply(`✅ Your bot @${botInfo.username} created successfully! Send /panel to manage it.`, keyboardConfig.mainMenu);
       await User.findOneAndUpdate({ userId }, { step: 'none' });
     } else if (user.step === 'delete_bot') {
       const bot = await Bot.findOne({ token: text });
       if (!bot) {
-        ctx.reply('❌ Bot token not found.', mainMenu);
+        ctx.reply('❌ Bot token not found.', keyboardConfig.mainMenu);
         await User.findOneAndUpdate({ userId }, { step: 'none' });
         return;
       }
 
       await deleteWebhook(text);
       await Bot.deleteOne({ token: text });
-      await BotUser.deleteMany({ botToken: text });
-      await ChannelUrl.deleteOne({ botToken: text });
 
-      ctx.reply('✅ Bot has been deleted and disconnected from Bot Maker.', mainMenu);
+      ctx.reply('✅ Bot has been deleted and disconnected from Bot Maker.', keyboardConfig.mainMenu);
       await User.findOneAndUpdate({ userId }, { step: 'none' });
     }
   } catch (error) {
     console.error('Error in text handler:', error);
-    ctx.reply('❌ An error occurred. Please try again.', mainMenu);
+    ctx.reply('❌ An error occurred. Please try again.', keyboardConfig.mainMenu);
   }
 });
 
-// /clear Command (Owner Only)
 makerBot.command('clear', async (ctx) => {
   const userId = ctx.from.id.toString();
-  console.log(`Received /clear from userId: ${userId}, OWNER_ID: ${OWNER_ID}`);
   if (userId !== OWNER_ID) {
-    console.log('Unauthorized access to /clear');
     ctx.reply('❌ You are not authorized to use this command.');
     return;
   }
 
   try {
     await Bot.deleteMany({});
-    await BotUser.deleteMany({});
-    await ChannelUrl.deleteMany({});
     await User.deleteMany({});
-    console.log('All data cleared successfully');
     ctx.reply('✅ All data has been cleared. Bot Maker is reset.');
   } catch (error) {
     console.error('Error during /clear:', error);
