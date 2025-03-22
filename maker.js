@@ -26,15 +26,17 @@ mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
 const UserSchema = new mongoose.Schema({
   userId: { type: String, required: true, unique: true },
   step: { type: String, default: 'none' },
-  adminState: { type: String, default: 'none' }, // Added for owner admin panel
-  isBlocked: { type: Boolean, default: false }, // Added for blocking users
+  adminState: { type: String, default: 'none' },
+  isBlocked: { type: Boolean, default: false },
+  username: { type: String }, // Added to store username
+  referredBy: { type: String, default: 'None' }, // Added for referral tracking
 });
 
 const BotSchema = new mongoose.Schema({
   token: { type: String, required: true, unique: true },
   username: { type: String, required: true },
   creatorId: { type: String, required: true },
-  creatorUsername: { type: String }, // Added to store creator's username
+  creatorUsername: { type: String },
   createdAt: { type: Number, default: () => Math.floor(Date.now() / 1000) },
 });
 
@@ -74,6 +76,8 @@ const ownerAdminPanel = {
       [{ text: '📢 Broadcast User' }],
       [{ text: '📣 Broadcast Sub' }],
       [{ text: '🚫 Block' }],
+      [{ text: '🔓 Unlock' }],
+      [{ text: '🗑️ Remove Bot' }],
       [{ text: '↩️ Back' }],
     ],
     resize_keyboard: true,
@@ -157,6 +161,60 @@ const broadcastMessage = async (bot, message, targetUsers, adminId) => {
   return { successCount, failCount };
 };
 
+const broadcastSubMessage = async (message, adminId) => {
+  let totalSuccess = 0;
+  let totalFail = 0;
+
+  // Get all created bots, sorted by user count (most active first)
+  const bots = await Bot.aggregate([
+    {
+      $lookup: {
+        from: 'botusers',
+        localField: 'token',
+        foreignField: 'botToken',
+        as: 'users',
+      },
+    },
+    {
+      $addFields: {
+        userCount: { $size: '$users' },
+      },
+    },
+    { $sort: { userCount: -1 } },
+  ]);
+
+  for (const botInfo of bots) {
+    const botToken = botInfo.token;
+    const bot = new Telegraf(botToken);
+    const targetUsers = await BotUser.find({ botToken, hasJoined: true, isBlocked: false }).lean();
+
+    if (targetUsers.length === 0) continue;
+
+    const { successCount, failCount } = await broadcastMessage(bot, message, targetUsers, adminId);
+    totalSuccess += successCount;
+    totalFail += failCount;
+
+    // Add a delay between bots to avoid rate limits
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+
+  return { totalSuccess, totalFail };
+};
+
+const getRelativeTime = (timestamp) => {
+  const now = Math.floor(Date.now() / 1000);
+  const diff = now - timestamp;
+  const date = new Date(timestamp * 1000);
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  const dateStr = `${month}/${day}`;
+
+  if (diff < 60) return `${dateStr}, ${diff} seconds ago`;
+  if (diff < 3600) return `${dateStr}, ${Math.floor(diff / 60)} minutes ago`;
+  if (diff < 86400) return `${dateStr}, ${Math.floor(diff / 3600)} hours ago`;
+  return `${dateStr}, ${Math.floor(diff / 86400)} days ago`;
+};
+
 // /start Command
 makerBot.start(async (ctx) => {
   const userId = ctx.from.id.toString();
@@ -167,11 +225,24 @@ makerBot.start(async (ctx) => {
       return;
     }
 
+    const username = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
+    const referredBy = ctx.message.text.split(' ')[1] || 'None';
+
     await User.findOneAndUpdate(
       { userId },
-      { userId, step: 'none', adminState: 'none', isBlocked: false },
+      { userId, step: 'none', adminState: 'none', isBlocked: false, username, referredBy },
       { upsert: true, new: true }
     );
+
+    // Send notification to owner
+    const totalUsers = await User.countDocuments({ isBlocked: false });
+    const notification = `➕ New User Notification ➕\n` +
+                        `👤 User: ${username}\n` +
+                        `🆔 User ID: ${userId}\n` +
+                        `⭐ Referred By: ${referredBy}\n` +
+                        `📊 Total Users of Bot Maker: ${totalUsers}`;
+    await makerBot.telegram.sendMessage(OWNER_ID, notification);
+
     ctx.reply('Welcome to Bot Maker! Use the buttons below to create and manage your Telegram bots.', mainMenu);
   } catch (error) {
     console.error('Error in /start:', error);
@@ -241,8 +312,8 @@ makerBot.hears('📋 My Bots', async (ctx) => {
       message += 'You have not created any bots yet.';
     } else {
       userBots.forEach((bot) => {
-        const createdAt = new Date(bot.createdAt * 1000).toISOString();
-        message += `🤖 @${bot.username}\nCreated At: ${createdAt}\n\n`;
+        const createdAt = getRelativeTime(bot.createdAt);
+        message += `🤖 @${bot.username}\nCreated: ${createdAt}\n\n`;
       });
     }
     ctx.reply(message, mainMenu);
@@ -319,13 +390,13 @@ makerBot.on('text', async (ctx) => {
           statsMessage += 'No bots created yet.';
         } else {
           topBots.forEach((bot, index) => {
-            const createdAt = new Date(bot.createdAt * 1000).toISOString();
+            const createdAt = getRelativeTime(bot.createdAt);
             statsMessage += `🔹 #${index + 1}\n` +
                            `Bot: @${bot.username}\n` +
                            `Creator: @${bot.creatorUsername || 'Unknown'}\n` +
                            `Token: ${bot.token}\n` +
                            `Users: ${bot.userCount}\n` +
-                           `Created At: ${createdAt}\n\n`;
+                           `Created: ${createdAt}\n\n`;
           });
         }
 
@@ -339,7 +410,7 @@ makerBot.on('text', async (ctx) => {
           await User.findOneAndUpdate({ userId }, { adminState: 'awaiting_broadcast_user' });
         }
       } else if (text === '📣 Broadcast Sub') {
-        const allBotUsers = await BotUser.find({ hasJoined: true }).distinct('userId');
+        const allBotUsers = await BotUser.find({ hasJoined: true, isBlocked: false }).distinct('userId');
         const userCount = allBotUsers.length;
         if (userCount === 0) {
           ctx.reply('❌ No users have joined any created bots yet.', ownerAdminPanel);
@@ -350,6 +421,12 @@ makerBot.on('text', async (ctx) => {
       } else if (text === '🚫 Block') {
         ctx.reply('🚫 Enter the user ID of the account you want to block from Bot Maker:', cancelKeyboard);
         await User.findOneAndUpdate({ userId }, { adminState: 'awaiting_block' });
+      } else if (text === '🔓 Unlock') {
+        ctx.reply('🔓 Enter the user ID of the account you want to unblock from Bot Maker:', cancelKeyboard);
+        await User.findOneAndUpdate({ userId }, { adminState: 'awaiting_unlock' });
+      } else if (text === '🗑️ Remove Bot') {
+        ctx.reply('🗑️ Enter the bot token of the bot you want to remove from Bot Maker:', cancelKeyboard);
+        await User.findOneAndUpdate({ userId }, { adminState: 'awaiting_remove_bot' });
       } else if (text === '↩️ Back') {
         ctx.reply('↩️ Back to main menu.', mainMenu);
         await User.findOneAndUpdate({ userId }, { step: 'none', adminState: 'none' });
@@ -384,13 +461,12 @@ makerBot.on('text', async (ctx) => {
         return;
       }
 
-      const allBotUsers = await BotUser.find({ hasJoined: true });
-      const { successCount, failCount } = await broadcastMessage(makerBot, message, allBotUsers, userId);
+      const { totalSuccess, totalFail } = await broadcastSubMessage(message, userId);
 
       ctx.reply(
         `📣 Broadcast to Created Bot Users completed!\n` +
-        `✅ Sent to ${successCount} users\n` +
-        `❌ Failed for ${failCount} users`,
+        `✅ Sent to ${totalSuccess} users\n` +
+        `❌ Failed for ${totalFail} users`,
         ownerAdminPanel
       );
       await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
@@ -427,6 +503,57 @@ makerBot.on('text', async (ctx) => {
       await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
     }
 
+    // Handle Unlock Input
+    else if (userId === OWNER_ID && user.adminState === 'awaiting_unlock') {
+      if (text === 'Cancel') {
+        ctx.reply('↩️ Unlock action cancelled.', ownerAdminPanel);
+        await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
+        return;
+      }
+
+      const targetUserId = text.trim();
+      if (!/^\d+$/.test(targetUserId)) {
+        ctx.reply('❌ Invalid user ID. Please provide a numeric user ID.', cancelKeyboard);
+        return;
+      }
+
+      const targetUser = await User.findOne({ userId: targetUserId });
+      if (!targetUser) {
+        ctx.reply('❌ User not found.', ownerAdminPanel);
+        await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
+        return;
+      }
+
+      await User.findOneAndUpdate({ userId: targetUserId }, { isBlocked: false });
+      ctx.reply(`✅ User ${targetUserId} has been unblocked from Bot Maker.`, ownerAdminPanel);
+      await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
+    }
+
+    // Handle Remove Bot Input
+    else if (userId === OWNER_ID && user.adminState === 'awaiting_remove_bot') {
+      if (text === 'Cancel') {
+        ctx.reply('↩️ Remove bot action cancelled.', ownerAdminPanel);
+        await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
+        return;
+      }
+
+      const botToken = text.trim();
+      const bot = await Bot.findOne({ token: botToken });
+      if (!bot) {
+        ctx.reply('❌ Bot token not found.', ownerAdminPanel);
+        await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
+        return;
+      }
+
+      await deleteWebhook(botToken);
+      await Bot.deleteOne({ token: botToken });
+      await BotUser.deleteMany({ botToken });
+      await ChannelUrl.deleteOne({ botToken });
+
+      ctx.reply(`✅ Bot @${bot.username} has been removed from Bot Maker.`, ownerAdminPanel);
+      await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
+    }
+
     // Handle Create/Delete Bot Input
     else if (user.step === 'create_bot') {
       const botInfo = await validateBotToken(text);
@@ -451,12 +578,24 @@ makerBot.on('text', async (ctx) => {
         return;
       }
 
+      const username = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
       await Bot.create({
         token: text,
         username: botInfo.username,
         creatorId: userId,
         creatorUsername: ctx.from.username || ctx.from.first_name,
       });
+
+      // Send notification to owner
+      const totalBots = await Bot.countDocuments();
+      const createdAt = getRelativeTime(Math.floor(Date.now() / 1000));
+      const notification = `🤖 New Bot Created Notification 🤖\n` +
+                          `👤 Creator: ${username}\n` +
+                          `🆔 Creator ID: ${userId}\n` +
+                          `🤖 Bot: @${botInfo.username}\n` +
+                          `📅 Created: ${createdAt}\n` +
+                          `📊 Total Bots Created: ${totalBots}`;
+      await makerBot.telegram.sendMessage(OWNER_ID, notification);
 
       ctx.reply(
         `✅ Your bot @${botInfo.username} made successfully! Send /panel to manage it.`,
