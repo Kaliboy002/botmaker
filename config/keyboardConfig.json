@@ -1,0 +1,33 @@
+{
+  "mainMenu": {
+    "reply_markup": {
+      "keyboard": [
+        [{ "text": "🛠 Create Bot" }],
+        [{ "text": "🗑️ Delete Bot" }],
+        [{ "text": "📋 My Bots" }]
+      ],
+      "resize_keyboard": true
+    }
+  },
+  "adminPanel": {
+    "reply_markup": {
+      "inline_keyboard": [
+        [{ "text": "📊 Statistics", "callback_data": "stats" }],
+        [{ "text": "📢 Broadcast", "callback_data": "broadcast" }],
+        [{ "text": "🔗 Set Channel URL", "callback_data": "set_channel" }],
+        [{ "text": "❌ Close Panel", "callback_data": "close" }]
+      ]
+    }
+  },
+  "cancel": {
+    "reply_markup": {
+      "inline_keyboard": [[{ "text": "Cancel", "callback_data": "cancel_action" }]]
+    }
+  },
+  "back": {
+    "reply_markup": {
+      "keyboard": [[{ "text": "Back" }]],
+      "resize_keyboard": true
+    }
+  }
+}
