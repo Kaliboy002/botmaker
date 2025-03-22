@@ -40,24 +40,22 @@ const Bot = mongoose.model('Bot', BotSchema);
 const BotUser = mongoose.model('BotUser', BotUserSchema);
 const ChannelUrl = mongoose.model('ChannelUrl', ChannelUrlSchema);
 
-// Admin Panel Keyboard
+// Admin Panel Inline Buttons (Glass Buttons)
 const adminPanel = {
   reply_markup: {
-    keyboard: [
-      [{ text: '📊 Statistics' }],
-      [{ text: '📍 Broadcast' }],
-      [{ text: '🔗 Set Channel URL' }],
-      [{ text: '↩️ Back' }],
+    inline_keyboard: [
+      [{ text: '📊 Statistics', callback_data: 'statistics' }],
+      [{ text: '📍 Broadcast', callback_data: 'broadcast' }],
+      [{ text: '🔗 Set Channel URL', callback_data: 'set_channel_url' }],
+      [{ text: '↩️ Back', callback_data: 'back' }],
     ],
-    resize_keyboard: true,
   },
 };
 
-// Cancel Keyboard
+// Cancel Keyboard (Used during Broadcast and Set Channel URL)
 const cancelKeyboard = {
   reply_markup: {
-    keyboard: [[{ text: 'Cancel' }]],
-    resize_keyboard: true,
+    inline_keyboard: [[{ text: 'Cancel', callback_data: 'cancel' }]],
   },
 };
 
@@ -87,7 +85,6 @@ module.exports = async (req, res) => {
     const fromId = (update.message?.from?.id || update.callback_query?.from?.id)?.toString();
     const text = update.message?.text;
     const message = update.message;
-    const messageId = update.message?.message_id;
 
     if (!chatId || !fromId) {
       res.status(400).json({ error: 'Invalid update' });
@@ -140,144 +137,156 @@ module.exports = async (req, res) => {
       await botUser.save();
     }
 
-    // Admin Panel Commands (Use hears for specific button texts)
-    if (botUser.step === 'admin_panel') {
-      if (text === '📊 Statistics') {
-        const userCount = await BotUser.countDocuments({ botToken, hasJoined: true });
-        const createdAt = new Date(botInfo.createdAt * 1000).toISOString();
-        const message = `📊 Statistics for @${botInfo.username}\n\n` +
-                       `👥 Total Users: ${userCount}\n` +
-                       `📅 Bot Created: ${createdAt}\n` +
-                       `🔗 Channel URL: ${channelUrl}`;
-        await bot.telegram.sendMessage(chatId, message, adminPanel);
-      } else if (text === '📍 Broadcast') {
-        const userCount = await BotUser.countDocuments({ botToken, hasJoined: true });
-        if (userCount === 0) {
-          await bot.telegram.sendMessage(chatId, '❌ No users have joined this bot yet.', adminPanel);
-        } else {
-          await bot.telegram.sendMessage(chatId, `📢 Send your message or content to broadcast to ${userCount} users:`, cancelKeyboard);
-          botUser.step = 'broadcast';
+    // Handle Admin Panel Inline Button Callbacks
+    if (update.callback_query) {
+      const callbackData = update.callback_query.data;
+      const callbackQuery = update.callback_query;
+
+      if (botUser.step === 'admin_panel') {
+        if (callbackData === 'statistics') {
+          const userCount = await BotUser.countDocuments({ botToken, hasJoined: true });
+          const createdAt = new Date(botInfo.createdAt * 1000).toISOString();
+          const message = `📊 Statistics for @${botInfo.username}\n\n` +
+                         `👥 Total Users: ${userCount}\n` +
+                         `📅 Bot Created: ${createdAt}\n` +
+                         `🔗 Channel URL: ${channelUrl}`;
+          await bot.telegram.sendMessage(chatId, message, adminPanel);
+          await bot.telegram.answerCallbackQuery(callbackQuery.id);
+        } else if (callbackData === 'broadcast') {
+          const userCount = await BotUser.countDocuments({ botToken, hasJoined: true });
+          if (userCount === 0) {
+            await bot.telegram.sendMessage(chatId, '❌ No users have joined this bot yet.', adminPanel);
+          } else {
+            await bot.telegram.sendMessage(chatId, `📢 Send your message or content to broadcast to ${userCount} users:`, cancelKeyboard);
+            botUser.step = 'broadcast';
+            await botUser.save();
+          }
+          await bot.telegram.answerCallbackQuery(callbackQuery.id);
+        } else if (callbackData === 'set_channel_url') {
+          await bot.telegram.sendMessage(chatId,
+            `🔗 Current Channel URL:\n${channelUrl}\n\n` +
+            `Enter the new channel URL (e.g., https://t.me/your_channel):`,
+            cancelKeyboard
+          );
+          botUser.step = 'set_channel_url';
           await botUser.save();
+          await bot.telegram.answerCallbackQuery(callbackQuery.id);
+        } else if (callbackData === 'back') {
+          await bot.telegram.sendMessage(chatId, '↩️ Returned to normal mode.', {
+            reply_markup: { inline_keyboard: [] },
+          });
+          botUser.step = 'none';
+          await botUser.save();
+          await bot.telegram.answerCallbackQuery(callbackQuery.id);
         }
-      } else if (text === '🔗 Set Channel URL') {
-        await bot.telegram.sendMessage(chatId,
-          `🔗 Current Channel URL:\n${channelUrl}\n\n` +
-          `Enter the new channel URL (e.g., https://t.me/your_channel):`,
-          cancelKeyboard
-        );
-        botUser.step = 'set_channel_url';
-        await botUser.save();
-      } else if (text === '↩️ Back') {
-        await bot.telegram.sendMessage(chatId, '↩️ Returned to normal mode.', {
-          reply_markup: { remove_keyboard: true },
-        });
-        botUser.step = 'none';
-        await botUser.save();
+      }
+
+      // Handle Cancel Button for Broadcast and Set Channel URL
+      if (callbackData === 'cancel') {
+        if (botUser.step === 'broadcast' || botUser.step === 'set_channel_url') {
+          await bot.telegram.sendMessage(chatId, '↩️ Action cancelled.', adminPanel);
+          botUser.step = 'admin_panel';
+          await botUser.save();
+          await bot.telegram.answerCallbackQuery(callbackQuery.id);
+        }
       }
     }
 
-    // Handle Broadcast and Set Channel URL Input (Only process if in the correct step)
-    if (text && botUser.step === 'broadcast') {
-      if (text === 'Cancel') {
-        await bot.telegram.sendMessage(chatId, '↩️ Broadcast cancelled.', adminPanel);
-        botUser.step = 'admin_panel';
-        await botUser.save();
-        return;
-      }
+    // Handle Broadcast and Set Channel URL Input (Only process text messages in the correct step)
+    if (text && (botUser.step === 'broadcast' || botUser.step === 'set_channel_url')) {
+      if (botUser.step === 'broadcast') {
+        const targetUsers = await BotUser.find({ botToken, hasJoined: true });
+        let successCount = 0;
+        let failCount = 0;
 
-      const targetUsers = await BotUser.find({ botToken, hasJoined: true });
-      let successCount = 0;
-      let failCount = 0;
-
-      for (const targetUser of targetUsers) {
-        if (targetUser.userId === fromId) continue; // Skip admin
-        try {
-          if (message.text) {
-            await bot.telegram.sendMessage(targetUser.userId, message.text);
-          } else if (message.photo) {
-            const photo = message.photo[message.photo.length - 1].file_id;
-            await bot.telegram.sendPhoto(targetUser.userId, photo, { caption: message.caption || '' });
-          } else if (message.document) {
-            await bot.telegram.sendDocument(targetUser.userId, message.document.file_id, { caption: message.caption || '' });
-          } else if (message.video) {
-            await bot.telegram.sendVideo(targetUser.userId, message.video.file_id, { caption: message.caption || '' });
-          } else if (message.audio) {
-            await bot.telegram.sendAudio(targetUser.userId, message.audio.file_id, { caption: message.caption || '' });
-          } else if (message.voice) {
-            await bot.telegram.sendVoice(targetUser.userId, message.voice.file_id);
-          } else if (message.sticker) {
-            await bot.telegram.sendSticker(targetUser.userId, message.sticker.file_id);
-          } else {
-            await bot.telegram.sendMessage(targetUser.userId, 'Unsupported message type');
+        for (const targetUser of targetUsers) {
+          if (targetUser.userId === fromId) continue; // Skip admin
+          try {
+            if (message.text) {
+              await bot.telegram.sendMessage(targetUser.userId, message.text);
+            } else if (message.photo) {
+              const photo = message.photo[message.photo.length - 1].file_id;
+              await bot.telegram.sendPhoto(targetUser.userId, photo, { caption: message.caption || '' });
+            } else if (message.document) {
+              await bot.telegram.sendDocument(targetUser.userId, message.document.file_id, { caption: message.caption || '' });
+            } else if (message.video) {
+              await bot.telegram.sendVideo(targetUser.userId, message.video.file_id, { caption: message.caption || '' });
+            } else if (message.audio) {
+              await bot.telegram.sendAudio(targetUser.userId, message.audio.file_id, { caption: message.caption || '' });
+            } else if (message.voice) {
+              await bot.telegram.sendVoice(targetUser.userId, message.voice.file_id);
+            } else if (message.sticker) {
+              await bot.telegram.sendSticker(targetUser.userId, message.sticker.file_id);
+            } else {
+              await bot.telegram.sendMessage(targetUser.userId, 'Unsupported message type');
+            }
+            successCount++;
+            await new Promise(resolve => setTimeout(resolve, 34)); // Rate limiting
+          } catch (error) {
+            console.error(`Broadcast failed for user ${targetUser.userId}:`, error.message);
+            failCount++;
           }
-          successCount++;
-          await new Promise(resolve => setTimeout(resolve, 34)); // Rate limiting
-        } catch (error) {
-          console.error(`Broadcast failed for user ${targetUser.userId}:`, error.message);
-          failCount++;
         }
-      }
 
-      await bot.telegram.sendMessage(chatId,
-        `📢 Broadcast completed!\n` +
-        `✅ Sent to ${successCount} users\n` +
-        `❌ Failed for ${failCount} users`,
-        adminPanel
-      );
-      botUser.step = 'admin_panel';
-      await botUser.save();
-    } else if (text && botUser.step === 'set_channel_url') {
-      if (text === 'Cancel') {
-        await bot.telegram.sendMessage(chatId, '↩️ Channel URL setting cancelled.', adminPanel);
+        await bot.telegram.sendMessage(chatId,
+          `📢 Broadcast completed!\n` +
+          `✅ Sent to ${successCount} users\n` +
+          `❌ Failed for ${failCount} users`,
+          adminPanel
+        );
         botUser.step = 'admin_panel';
         await botUser.save();
-        return;
+      } else if (botUser.step === 'set_channel_url') {
+        let inputUrl = text.trim();
+        inputUrl = inputUrl.replace(/^(https?:\/\/)?/i, '');
+        inputUrl = inputUrl.replace(/\/+$/, '');
+        if (!/^t\.me\//i.test(inputUrl)) {
+          inputUrl = 't.me/' + inputUrl;
+        }
+        const correctedUrl = 'https://' + inputUrl;
+
+        const urlRegex = /^https:\/\/t\.me\/.+$/;
+        if (!urlRegex.test(correctedUrl)) {
+          await bot.telegram.sendMessage(chatId, '❌ Invalid URL. Please provide a valid Telegram channel URL (e.g., https://t.me/your_channel).', cancelKeyboard);
+          return;
+        }
+
+        await ChannelUrl.findOneAndUpdate(
+          { botToken },
+          { botToken, url: correctedUrl },
+          { upsert: true }
+        );
+
+        await bot.telegram.sendMessage(chatId, `✅ Channel URL has been set to:\n${correctedUrl}`, adminPanel);
+        botUser.step = 'admin_panel';
+        await botUser.save();
       }
-
-      let inputUrl = text.trim();
-      inputUrl = inputUrl.replace(/^(https?:\/\/)?/i, '');
-      inputUrl = inputUrl.replace(/\/+$/, '');
-      if (!/^t\.me\//i.test(inputUrl)) {
-        inputUrl = 't.me/' + inputUrl;
-      }
-      const correctedUrl = 'https://' + inputUrl;
-
-      const urlRegex = /^https:\/\/t\.me\/.+$/;
-      if (!urlRegex.test(correctedUrl)) {
-        await bot.telegram.sendMessage(chatId, '❌ Invalid URL. Please provide a valid Telegram channel URL (e.g., https://t.me/your_channel).', cancelKeyboard);
-        return;
-      }
-
-      await ChannelUrl.findOneAndUpdate(
-        { botToken },
-        { botToken, url: correctedUrl },
-        { upsert: true }
-      );
-
-      await bot.telegram.sendMessage(chatId, `✅ Channel URL has been set to:\n${correctedUrl}`, adminPanel);
-      botUser.step = 'admin_panel';
-      await botUser.save();
     }
 
     // Handle Regular Messages (Only if in 'none' step and user has joined)
     if (botUser.hasJoined && botUser.step === 'none' && text !== '/start' && text !== '/panel') {
-      if (message.text) {
-        await bot.telegram.sendMessage(chatId, message.text);
-      } else if (message.photo) {
-        const photo = message.photo[message.photo.length - 1].file_id;
-        await bot.telegram.sendPhoto(chatId, photo, { caption: message.caption || '' });
-      } else if (message.document) {
-        await bot.telegram.sendDocument(chatId, message.document.file_id, { caption: message.caption || '' });
-      } else if (message.video) {
-        await bot.telegram.sendVideo(chatId, message.video.file_id, { caption: message.caption || '' });
-      } else if (message.audio) {
-        await bot.telegram.sendAudio(chatId, message.audio.file_id, { caption: message.caption || '' });
-      } else if (message.voice) {
-        await bot.telegram.sendVoice(chatId, message.voice.file_id);
-      } else if (message.sticker) {
-        await bot.telegram.sendSticker(chatId, message.sticker.file_id);
-      } else {
-        await bot.telegram.sendMessage(chatId, 'Unsupported message type');
+      try {
+        if (message.text) {
+          await bot.telegram.sendMessage(chatId, message.text);
+        } else if (message.photo) {
+          const photo = message.photo[message.photo.length - 1].file_id;
+          await bot.telegram.sendPhoto(chatId, photo, { caption: message.caption || '' });
+        } else if (message.document) {
+          await bot.telegram.sendDocument(chatId, message.document.file_id, { caption: message.caption || '' });
+        } else if (message.video) {
+          await bot.telegram.sendVideo(chatId, message.video.file_id, { caption: message.caption || '' });
+        } else if (message.audio) {
+          await bot.telegram.sendAudio(chatId, message.audio.file_id, { caption: message.caption || '' });
+        } else if (message.voice) {
+          await bot.telegram.sendVoice(chatId, message.voice.file_id);
+        } else if (message.sticker) {
+          await bot.telegram.sendSticker(chatId, message.sticker.file_id);
+        } else {
+          await bot.telegram.sendMessage(chatId, 'Unsupported message type');
+        }
+      } catch (error) {
+        console.error('Error handling regular message:', error);
+        await bot.telegram.sendMessage(chatId, '❌ An error occurred while processing your message.');
       }
     }
 
