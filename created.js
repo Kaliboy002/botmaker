@@ -32,8 +32,8 @@ const BotUserSchema = new mongoose.Schema({
   adminState: { type: String, default: 'none' },
   lastInteraction: { type: Number, default: () => Math.floor(Date.now() / 1000) },
   isBlocked: { type: Boolean, default: false },
-  username: { type: String }, // Added to store username
-  referredBy: { type: String, default: 'None' }, // Added for referral tracking
+  username: { type: String },
+  referredBy: { type: String, default: 'None' },
 });
 
 BotUserSchema.index({ botToken: 1, userId: 1 }, { unique: true });
@@ -41,14 +41,14 @@ BotUserSchema.index({ botToken: 1, hasJoined: 1 });
 
 const ChannelUrlSchema = new mongoose.Schema({
   botToken: { type: String, required: true, unique: true },
-  url: { type: String, default: 'https://t.me/Kali_Linux_BOTS' },
+  url: { type: String, default: null }, // Default to null to indicate no custom URL
 });
 
 const Bot = mongoose.model('Bot', BotSchema);
 const BotUser = mongoose.model('BotUser', BotUserSchema);
 const ChannelUrl = mongoose.model('ChannelUrl', ChannelUrlSchema);
 
-// Admin Panel Keyboard (Updated with Unlock button)
+// Admin Panel Keyboard
 const adminPanel = {
   reply_markup: {
     keyboard: [
@@ -74,7 +74,7 @@ const cancelKeyboard = {
 // Helper Functions
 const getChannelUrl = async (botToken) => {
   const channelUrlDoc = await ChannelUrl.findOne({ botToken }).lean();
-  return channelUrlDoc?.url || 'https://t.me/Kali_Linux_BOTS';
+  return channelUrlDoc?.url || null; // Return null if no custom URL is set
 };
 
 const broadcastMessage = async (bot, message, targetUsers, adminId) => {
@@ -157,36 +157,13 @@ module.exports = async (req, res) => {
       return;
     }
 
-    // Initialize Bot User
+    // Initialize Bot User (moved to /start handler)
     let botUser = await BotUser.findOne({ botToken, userId: fromId });
-    if (!botUser) {
-      const username = update.message?.from?.username ? `@${update.message.from.username}` : update.message?.from?.first_name;
-      const referredBy = update.message?.text?.split(' ')[1] || 'None';
-      botUser = await BotUser.create({
-        botToken,
-        userId: fromId,
-        hasJoined: false,
-        userStep: 'none',
-        adminState: 'none',
-        isBlocked: false,
-        username,
-        referredBy,
-      });
-
-      // Send notification to admin (creator of the bot)
-      const totalUsers = await BotUser.countDocuments({ botToken, hasJoined: true });
-      const notification = `➕ New User Notification ➕\n` +
-                          `👤 User: ${username}\n` +
-                          `🆔 User ID: ${fromId}\n` +
-                          `⭐ Referred By: ${referredBy}\n` +
-                          `📊 Total Users of Bot: ${totalUsers}`;
-      await bot.telegram.sendMessage(botInfo.creatorId, notification);
-    }
 
     botUser.lastInteraction = Math.floor(Date.now() / 1000);
-    await botUser.save();
+    await botUser?.save();
 
-    if (botUser.isBlocked && fromId !== botInfo.creatorId) {
+    if (botUser?.isBlocked && fromId !== botInfo.creatorId) {
       bot.telegram.sendMessage(chatId, '🚫 You have been banned by the admin.');
       return res.status(200).json({ ok: true });
     }
@@ -200,17 +177,46 @@ module.exports = async (req, res) => {
 
       // /start Command
       if (text === '/start') {
+        // Check if user already exists to avoid multiple notifications
+        if (!botUser) {
+          const username = update.message?.from?.username ? `@${update.message.from.username}` : update.message?.from?.first_name;
+          const referredBy = update.message?.text?.split(' ')[1] || 'None';
+          botUser = await BotUser.create({
+            botToken,
+            userId: fromId,
+            hasJoined: false,
+            userStep: 'none',
+            adminState: 'none',
+            isBlocked: false,
+            username,
+            referredBy,
+          });
+
+          // Send notification to admin (creator of the bot) only for first-time users
+          const totalUsers = await BotUser.countDocuments({ botToken, hasJoined: true });
+          const notification = `➕ New User Notification ➕\n` +
+                              `👤 User: ${username}\n` +
+                              `🆔 User ID: ${fromId}\n` +
+                              `⭐ Referred By: ${referredBy}\n` +
+                              `📊 Total Users of Bot: ${totalUsers}`;
+          await bot.telegram.sendMessage(botInfo.creatorId, notification);
+        }
+
         if (botUser.hasJoined) {
           await bot.telegram.sendMessage(chatId, 'Hi, how are you?');
         } else {
-          await bot.telegram.sendMessage(chatId, 'Please join our channel and click on Joined button to proceed.', {
+          // Always include Kali Linux Bots link, add custom channel if set
+          const inlineKeyboard = [
+            [{ text: 'Join Kali Linux Bots', url: 'https://t.me/Kali_Linux_BOTS' }],
+          ];
+          if (channelUrl) {
+            inlineKeyboard.push([{ text: 'Join Channel', url: channelUrl }]);
+          }
+          inlineKeyboard.push([{ text: 'Joined', callback_data: 'joined' }]);
+
+          await bot.telegram.sendMessage(chatId, 'Please join the required channel(s) and click on Joined button to proceed.', {
             reply_markup: {
-              inline_keyboard: [
-                [
-                  { text: 'Join Channel', url: channelUrl },
-                  { text: 'Joined', callback_data: 'joined' },
-                ],
-              ],
+              inline_keyboard: inlineKeyboard,
             },
           });
         }
@@ -234,10 +240,10 @@ module.exports = async (req, res) => {
           const message = `📊 Statistics for @${botInfo.username}\n\n` +
                          `👥 Total Users: ${userCount}\n` +
                          `📅 Bot Created: ${createdAt}\n` +
-                         `🔗 Channel URL: ${channelUrl}`;
+                         `🔗 Channel URL: ${channelUrl || 'Not set'}`;
           await bot.telegram.sendMessage(chatId, message, adminPanel);
         } else if (text === '📍 Broadcast') {
-          const userCount = await BotUser.countDocuments({ botToken, hasJoined: true });
+          const userCount = await BotUser.countDocuments({ botToken, hasJoined: true, isBlocked: false });
           if (userCount === 0) {
             await bot.telegram.sendMessage(chatId, '❌ No users have joined this bot yet.', adminPanel);
           } else {
@@ -247,7 +253,7 @@ module.exports = async (req, res) => {
           }
         } else if (text === '🔗 Set Channel URL') {
           await bot.telegram.sendMessage(chatId,
-            `🔗 Current Channel URL:\n${channelUrl}\n\n` +
+            `🔗 Current Channel URL:\n${channelUrl || 'Not set'}\n\n` +
             `Enter the new channel URL (e.g., https://t.me/your_channel):`,
             cancelKeyboard
           );
@@ -354,9 +360,7 @@ module.exports = async (req, res) => {
 
         const targetUser = await BotUser.findOne({ botToken, userId: targetUserId });
         if (!targetUser) {
-          await bot.telegram.sendMessage(chatId, '❌ User not found in this bot.', adminPanel);
-          botUser.adminState = 'admin_panel';
-          await botUser.save();
+          await bot.telegram.sendMessage(chatId, '❌ User not found in this bot.', cancelKeyboard);
           return;
         }
 
@@ -383,9 +387,7 @@ module.exports = async (req, res) => {
 
         const targetUser = await BotUser.findOne({ botToken, userId: targetUserId });
         if (!targetUser) {
-          await bot.telegram.sendMessage(chatId, '❌ User not found in this bot.', adminPanel);
-          botUser.adminState = 'admin_panel';
-          await botUser.save();
+          await bot.telegram.sendMessage(chatId, '❌ User not found in this bot.', cancelKeyboard);
           return;
         }
 
@@ -396,7 +398,7 @@ module.exports = async (req, res) => {
       }
 
       // Handle Regular Messages (Only if in 'none' state and user has joined)
-      else if (botUser.hasJoined && botUser.adminState === 'none' && text !== '/start' && text !== '/panel') {
+      else if (botUser?.hasJoined && botUser.adminState === 'none' && text !== '/start' && text !== '/panel') {
         if (message.text) {
           await bot.telegram.sendMessage(chatId, message.text);
         } else if (message.photo) {
