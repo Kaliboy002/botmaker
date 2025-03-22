@@ -1,7 +1,7 @@
 const { Telegraf } = require('telegraf');
 const mongoose = require('mongoose');
 
-// MongoDB Connection (already defined in maker.js, but repeated for clarity)
+// MongoDB Connection
 const MONGO_URI = process.env.MONGO_URI;
 
 if (!MONGO_URI) {
@@ -16,7 +16,7 @@ mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
     process.exit(1);
   });
 
-// MongoDB Models (already defined in maker.js, repeated for standalone usage)
+// MongoDB Models
 const BotSchema = new mongoose.Schema({
   token: { type: String, required: true, unique: true },
   username: { type: String, required: true },
@@ -140,7 +140,7 @@ module.exports = async (req, res) => {
       await botUser.save();
     }
 
-    // Admin Panel Commands
+    // Admin Panel Commands (Use hears for specific button texts)
     if (botUser.step === 'admin_panel') {
       if (text === '📊 Statistics') {
         const userCount = await BotUser.countDocuments({ botToken, hasJoined: true });
@@ -176,8 +176,8 @@ module.exports = async (req, res) => {
       }
     }
 
-    // Handle Broadcast
-    if (botUser.step === 'broadcast') {
+    // Handle Broadcast and Set Channel URL Input (Only process if in the correct step)
+    if (text && botUser.step === 'broadcast') {
       if (text === 'Cancel') {
         await bot.telegram.sendMessage(chatId, '↩️ Broadcast cancelled.', adminPanel);
         botUser.step = 'admin_panel';
@@ -211,8 +211,7 @@ module.exports = async (req, res) => {
             await bot.telegram.sendMessage(targetUser.userId, 'Unsupported message type');
           }
           successCount++;
-          // Rate limiting: 30 messages per second (Telegram limit)
-          await new Promise(resolve => setTimeout(resolve, 34)); // ~30 messages/sec
+          await new Promise(resolve => setTimeout(resolve, 34)); // Rate limiting
         } catch (error) {
           console.error(`Broadcast failed for user ${targetUser.userId}:`, error.message);
           failCount++;
@@ -227,10 +226,7 @@ module.exports = async (req, res) => {
       );
       botUser.step = 'admin_panel';
       await botUser.save();
-    }
-
-    // Handle Set Channel URL
-    if (botUser.step === 'set_channel_url') {
+    } else if (text && botUser.step === 'set_channel_url') {
       if (text === 'Cancel') {
         await bot.telegram.sendMessage(chatId, '↩️ Channel URL setting cancelled.', adminPanel);
         botUser.step = 'admin_panel';
@@ -263,7 +259,7 @@ module.exports = async (req, res) => {
       await botUser.save();
     }
 
-    // Handle Regular Messages
+    // Handle Regular Messages (Only if in 'none' step and user has joined)
     if (botUser.hasJoined && botUser.step === 'none' && text !== '/start' && text !== '/panel') {
       if (message.text) {
         await bot.telegram.sendMessage(chatId, message.text);
