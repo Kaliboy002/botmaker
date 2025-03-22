@@ -255,9 +255,13 @@ makerBot.command('clear', async (ctx) => {
   }
 
   try {
+    console.log('Starting data deletion');
     await Bot.deleteMany({});
+    console.log('Deleted Bots');
     await BotUser.deleteMany({});
+    console.log('Deleted BotUsers');
     await ChannelUrl.deleteMany({});
+    console.log('Deleted ChannelUrls');
     await User.deleteMany({});
     console.log('All data cleared successfully');
     ctx.reply('✅ All data has been cleared. Bot Maker is reset.');
