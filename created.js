@@ -16,17 +16,19 @@ mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
     process.exit(1);
   });
 
-// MongoDB Schemas
+// MongoDB Schemas with Indexes
 const BotSchema = new mongoose.Schema({
-  token: { type: String, required: true, unique: true, index: true },
+  token: { type: String, required: true, unique: true },
   username: { type: String, required: true },
-  creatorId: { type: String, required: true, index: true },
+  creatorId: { type: String, required: true },
   createdAt: { type: Number, default: () => Math.floor(Date.now() / 1000) },
 });
 
+BotSchema.index({ creatorId: 1 });
+
 const BotUserSchema = new mongoose.Schema({
-  botToken: { type: String, required: true, index: true },
-  userId: { type: String, required: true, index: true },
+  botToken: { type: String, required: true },
+  userId: { type: String, required: true },
   hasJoined: { type: Boolean, default: false },
   userStep: { type: String, default: 'none' },
   adminState: { type: String, default: 'none' },
@@ -34,8 +36,11 @@ const BotUserSchema = new mongoose.Schema({
   lastInteraction: { type: Number, default: () => Math.floor(Date.now() / 1000) },
 });
 
+BotUserSchema.index({ botToken: 1, userId: 1 }, { unique: true });
+BotUserSchema.index({ botToken: 1, hasJoined: 1 });
+
 const ChannelUrlSchema = new mongoose.Schema({
-  botToken: { type: String, required: true, unique: true, index: true },
+  botToken: { type: String, required: true, unique: true },
   url: { type: String, default: 'https://t.me/Kali_Linux_BOTS' },
 });
 
@@ -111,7 +116,7 @@ const broadcastMessage = async (bot, message, targetUsers, adminId) => {
         await bot.telegram.sendMessage(user.userId, 'Unsupported message type');
       }
       successCount++;
-      await new Promise(resolve => setTimeout(resolve, 50)); // Rate limiting
+      await new Promise(resolve => setTimeout(resolve, 33)); // ~30 messages per second
     } catch (error) {
       console.error(`Broadcast failed for user ${user.userId}:`, error.message);
       failCount++;
@@ -119,6 +124,20 @@ const broadcastMessage = async (bot, message, targetUsers, adminId) => {
   }
 
   return { successCount, failCount };
+};
+
+const echoMessage = async (bot, chatId, message) => {
+  if (message.text) {
+    await bot.telegram.sendMessage(chatId, `Echo: ${message.text}`);
+  } else if (message.photo) {
+    await bot.telegram.sendPhoto(chatId, message.photo[message.photo.length - 1].file_id, {
+      caption: `Echo: ${message.caption || ''}`,
+    });
+  } else if (message.video) {
+    await bot.telegram.sendVideo(chatId, message.video.file_id, {
+      caption: `Echo: ${message.caption || ''}`,
+    });
+  } // Add other types as needed
 };
 
 // Vercel Handler
@@ -159,11 +178,11 @@ module.exports = async (req, res) => {
 
     const channelUrl = await getChannelUrl(botToken);
 
-    // Handle Commands
-    if (update.message?.text) {
-      const text = update.message.text;
+    // Handle Commands and Messages
+    if (update.message) {
+      const message = update.message;
+      const text = message.text;
 
-      // /start Command
       if (text === '/start') {
         if (botUser.hasJoined) {
           await bot.telegram.sendMessage(chatId, 'Welcome back! How can I assist you?');
@@ -173,11 +192,7 @@ module.exports = async (req, res) => {
         botUser.userStep = 'none';
         botUser.adminState = 'none';
         await botUser.save();
-        return res.status(200).json({ ok: true });
-      }
-
-      // /panel Command (Admin Only)
-      if (text === '/panel' && fromId === botInfo.creatorId) {
+      } else if (text === '/panel' && fromId === botInfo.creatorId) {
         if (botUser.adminMessageId) {
           try {
             await bot.telegram.deleteMessage(chatId, botUser.adminMessageId);
@@ -189,7 +204,35 @@ module.exports = async (req, res) => {
         botUser.adminState = 'panel_open';
         botUser.adminMessageId = panelMessage.message_id;
         await botUser.save();
-        return res.status(200).json({ ok: true });
+      } else if (botUser.hasJoined && botUser.adminState === 'none' && text !== '/start' && text !== '/panel') {
+        await echoMessage(bot, chatId, message);
+      } else if (fromId === botInfo.creatorId && botUser.adminState === 'awaiting_broadcast') {
+        const targetUsers = await BotUser.find({ botToken, hasJoined: true }).lean();
+        const { successCount, failCount } = await broadcastMessage(bot, message, targetUsers, fromId);
+        await bot.telegram.sendMessage(chatId,
+          `📢 Broadcast Results:\n✅ Success: ${successCount}\n❌ Failed: ${failCount}`,
+          adminPanelKeyboard
+        );
+        botUser.adminState = 'panel_open';
+        await botUser.save();
+      } else if (fromId === botInfo.creatorId && botUser.adminState === 'awaiting_channel' && text) {
+        const newUrl = text.trim();
+        const urlRegex = /^https:\/\/t\.me\/.+$/;
+        if (!urlRegex.test(newUrl)) {
+          await bot.telegram.sendMessage(chatId,
+            '❌ Invalid URL. Please use format: https://t.me/channel_name',
+            cancelKeyboard
+          );
+        } else {
+          await ChannelUrl.findOneAndUpdate(
+            { botToken },
+            { url: newUrl },
+            { upsert: true }
+          );
+          await bot.telegram.sendMessage(chatId, `✅ Channel URL updated to: ${newUrl}`, adminPanelKeyboard);
+          botUser.adminState = 'panel_open';
+          await botUser.save();
+        }
       }
     }
 
@@ -198,22 +241,13 @@ module.exports = async (req, res) => {
       const callbackQuery = update.callback_query;
       const callbackData = callbackQuery.data;
 
-      // Handle "Joined" Callback
+      await bot.telegram.answerCallbackQuery(callbackQuery.id);
+
       if (callbackData === 'joined') {
         botUser.hasJoined = true;
         await botUser.save();
-        await bot.telegram.answerCallbackQuery(callbackQuery.id, { text: 'Verified!' });
         await bot.telegram.sendMessage(chatId, 'Welcome! How can I assist you?');
-        return res.status(200).json({ ok: true });
-      }
-
-      // Admin-only Callbacks
-      if (fromId !== botInfo.creatorId) {
-        await bot.telegram.answerCallbackQuery(callbackQuery.id, { text: 'Unauthorized access' });
-        return res.status(200).json({ ok: true });
-      }
-
-      if (botUser.adminState === 'panel_open') {
+      } else if (fromId === botInfo.creatorId && botUser.adminState === 'panel_open') {
         switch (callbackData) {
           case 'stats':
             const userCount = await BotUser.countDocuments({ botToken, hasJoined: true });
@@ -223,9 +257,7 @@ module.exports = async (req, res) => {
                                  `📅 Created: ${createdAt}\n` +
                                  `🔗 Channel: ${channelUrl}`;
             await bot.telegram.sendMessage(chatId, statsMessage);
-            await bot.telegram.answerCallbackQuery(callbackQuery.id);
             break;
-
           case 'broadcast':
             const totalUsers = await BotUser.countDocuments({ botToken, hasJoined: true });
             if (totalUsers === 0) {
@@ -238,9 +270,7 @@ module.exports = async (req, res) => {
               botUser.adminState = 'awaiting_broadcast';
               await botUser.save();
             }
-            await bot.telegram.answerCallbackQuery(callbackQuery.id);
             break;
-
           case 'set_channel':
             await bot.telegram.sendMessage(chatId,
               `🔗 Current Channel: ${channelUrl}\n\n` +
@@ -249,9 +279,7 @@ module.exports = async (req, res) => {
             );
             botUser.adminState = 'awaiting_channel';
             await botUser.save();
-            await bot.telegram.answerCallbackQuery(callbackQuery.id);
             break;
-
           case 'close':
             if (botUser.adminMessageId) {
               await bot.telegram.deleteMessage(chatId, botUser.adminMessageId);
@@ -259,87 +287,16 @@ module.exports = async (req, res) => {
             botUser.adminState = 'none';
             botUser.adminMessageId = null;
             await botUser.save();
-            await bot.telegram.answerCallbackQuery(callbackQuery.id);
             break;
-
           case 'cancel_action':
             if (botUser.adminState === 'awaiting_broadcast' || botUser.adminState === 'awaiting_channel') {
               await bot.telegram.sendMessage(chatId, 'Action cancelled.', adminPanelKeyboard);
               botUser.adminState = 'panel_open';
               await botUser.save();
             }
-            await bot.telegram.answerCallbackQuery(callbackQuery.id);
             break;
-
-          default:
-            await bot.telegram.answerCallbackQuery(callbackQuery.id, { text: 'Unknown action' });
         }
-        return res.status(200).json({ ok: true });
       }
-    }
-
-    // Handle Admin Input (Broadcast and Set Channel URL)
-    if (fromId === botInfo.creatorId && update.message && botUser.adminState !== 'none' && botUser.adminState !== 'panel_open') {
-      if (botUser.adminState === 'awaiting_broadcast') {
-        const targetUsers = await BotUser.find({ botToken, hasJoined: true }).lean();
-        const { successCount, failCount } = await broadcastMessage(bot, update.message, targetUsers, fromId);
-        await bot.telegram.sendMessage(chatId,
-          `📢 Broadcast Results:\n✅ Success: ${successCount}\n❌ Failed: ${failCount}`,
-          adminPanelKeyboard
-        );
-        botUser.adminState = 'panel_open';
-        await botUser.save();
-        return res.status(200).json({ ok: true });
-      }
-
-      if (botUser.adminState === 'awaiting_channel') {
-        const text = update.message.text;
-        if (!text) {
-          await bot.telegram.sendMessage(chatId, '❌ Please send a text URL.', cancelKeyboard);
-          return res.status(200).json({ ok: true });
-        }
-
-        let newUrl = text.trim();
-        if (!/^https:\/\/t\.me\//i.test(newUrl)) {
-          newUrl = 'https://t.me/' + newUrl.replace(/^@|https?:\/\//gi, '');
-        }
-
-        const urlRegex = /^https:\/\/t\.me\/.+$/;
-        if (!urlRegex.test(newUrl)) {
-          await bot.telegram.sendMessage(chatId,
-            '❌ Invalid URL. Please use format: https://t.me/channel_name',
-            cancelKeyboard
-          );
-          return res.status(200).json({ ok: true });
-        }
-
-        await ChannelUrl.findOneAndUpdate(
-          { botToken },
-          { url: newUrl },
-          { upsert: true }
-        );
-        await bot.telegram.sendMessage(chatId, `✅ Channel URL updated to: ${newUrl}`, adminPanelKeyboard);
-        botUser.adminState = 'panel_open';
-        await botUser.save();
-        return res.status(200).json({ ok: true });
-      }
-    }
-
-    // Handle Regular User Messages
-    if (botUser.hasJoined && botUser.userStep === 'none' && botUser.adminState === 'none' && update.message) {
-      const message = update.message;
-      if (message.text && !['/start', '/panel'].includes(message.text)) {
-        await bot.telegram.sendMessage(chatId, `Echo: ${message.text}`);
-      } else if (message.photo) {
-        await bot.telegram.sendPhoto(chatId, message.photo[message.photo.length - 1].file_id, {
-          caption: message.caption || 'Photo received',
-        });
-      } else if (message.video) {
-        await bot.telegram.sendVideo(chatId, message.video.file_id, {
-          caption: message.caption || 'Video received',
-        });
-      }
-      return res.status(200).json({ ok: true });
     }
 
     return res.status(200).json({ ok: true });
