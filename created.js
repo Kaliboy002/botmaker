@@ -236,11 +236,26 @@ module.exports = async (req, res) => {
       else if (fromId === botInfo.creatorId && botUser.adminState === 'admin_panel') {
         if (text === '📊 Statistics') {
           const userCount = await BotUser.countDocuments({ botToken, hasJoined: true });
+          const totalBlockedUsers = await BotUser.countDocuments({ botToken, isBlocked: true }); // Added for enhanced stats
+          const recentUsers = await BotUser.find({ botToken, hasJoined: true })
+            .sort({ lastInteraction: -1 })
+            .limit(5)
+            .lean();
           const createdAt = getRelativeTime(botInfo.createdAt);
+          let recentUsersText = '📅 Recent Users (Last 5):\n';
+          if (recentUsers.length === 0) {
+            recentUsersText += 'No recent users.\n';
+          } else {
+            recentUsers.forEach((user, index) => {
+              recentUsersText += `${index + 1}. ${user.username || 'Unknown'} (ID: ${user.userId})\n`;
+            });
+          }
           const message = `📊 Statistics for @${botInfo.username}\n\n` +
                          `👥 Total Users: ${userCount}\n` +
+                         `🚫 Total Blocked Users: ${totalBlockedUsers}\n` +
                          `📅 Bot Created: ${createdAt}\n` +
-                         `🔗 Channel URL: ${channelUrl || 'Not set'}`;
+                         `🔗 Channel URL: ${channelUrl || 'Not set'}\n\n` +
+                         recentUsersText;
           await bot.telegram.sendMessage(chatId, message, adminPanel);
         } else if (text === '📍 Broadcast') {
           const userCount = await BotUser.countDocuments({ botToken, hasJoined: true, isBlocked: false });
