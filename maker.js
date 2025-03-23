@@ -30,7 +30,7 @@ const UserSchema = new mongoose.Schema({
   isBlocked: { type: Boolean, default: false },
   username: { type: String },
   referredBy: { type: String, default: 'None' },
-  isFirstStart: { type: Boolean, default: true }, // Added to track first start
+  isFirstStart: { type: Boolean, default: true },
 });
 
 const BotSchema = new mongoose.Schema({
@@ -81,13 +81,6 @@ const ownerAdminPanel = {
       [{ text: '🗑️ Remove Bot' }],
       [{ text: '↩️ Back' }],
     ],
-    resize_keyboard: true,
-  },
-};
-
-const cancelKeyboard = {
-  reply_markup: {
-    keyboard: [[{ text: 'Cancel' }]],
     resize_keyboard: true,
   },
 };
@@ -193,7 +186,8 @@ const broadcastSubMessage = async (message, adminId) => {
   for (const botInfo of bots) {
     const botToken = botInfo.token;
     const bot = new Telegraf(botToken);
-    const targetUsers = await BotUser.find({ botToken, hasJoined: true, isBlocked: false }).lean();
+    // Removed the isBlocked: false condition to include blocked users
+    const targetUsers = await BotUser.find({ botToken, hasJoined: true }).lean();
 
     if (targetUsers.length === 0) continue;
 
@@ -246,7 +240,6 @@ makerBot.start(async (ctx) => {
       });
     }
 
-    // Send notification to owner only on first start
     if (user.isFirstStart) {
       const totalUsers = await User.countDocuments({ isBlocked: false });
       const notification = `➕ New User Notification ➕\n` +
@@ -256,7 +249,6 @@ makerBot.start(async (ctx) => {
                           `📊 Total Users of Bot Maker: ${totalUsers}`;
       await makerBot.telegram.sendMessage(OWNER_ID, notification);
 
-      // Update isFirstStart to false after sending the notification
       user.isFirstStart = false;
       await user.save();
     }
@@ -410,30 +402,30 @@ makerBot.on('text', async (ctx) => {
 
         ctx.reply(statsMessage, ownerAdminPanel);
       } else if (text === '📢 Broadcast User') {
-        const userCount = await User.countDocuments({ isBlocked: false });
+        const userCount = await User.countDocuments();
         if (userCount === 0) {
           ctx.reply('❌ No users have joined Bot Maker yet.', ownerAdminPanel);
         } else {
-          ctx.reply(`📢 Send your message or content to broadcast to ${userCount} Bot Maker users:`, cancelKeyboard);
+          ctx.reply(`📢 Send your message or content to broadcast to ${userCount} Bot Maker users:`, backKeyboard);
           await User.findOneAndUpdate({ userId }, { adminState: 'awaiting_broadcast_user' });
         }
       } else if (text === '📣 Broadcast Sub') {
-        const allBotUsers = await BotUser.find({ hasJoined: true, isBlocked: false }).distinct('userId');
+        const allBotUsers = await BotUser.find({ hasJoined: true }).distinct('userId');
         const userCount = allBotUsers.length;
         if (userCount === 0) {
           ctx.reply('❌ No users have joined any created bots yet.', ownerAdminPanel);
         } else {
-          ctx.reply(`📣 Send your message or content to broadcast to ${userCount} users of created bots:`, cancelKeyboard);
+          ctx.reply(`📣 Send your message or content to broadcast to ${userCount} users of created bots:`, backKeyboard);
           await User.findOneAndUpdate({ userId }, { adminState: 'awaiting_broadcast_sub' });
         }
       } else if (text === '🚫 Block') {
-        ctx.reply('🚫 Enter the user ID of the account you want to block from Bot Maker:', cancelKeyboard);
+        ctx.reply('🚫 Enter the user ID of the account you want to block from Bot Maker:', backKeyboard);
         await User.findOneAndUpdate({ userId }, { adminState: 'awaiting_block' });
       } else if (text === '🔓 Unlock') {
-        ctx.reply('🔓 Enter the user ID of the account you want to unblock from Bot Maker:', cancelKeyboard);
+        ctx.reply('🔓 Enter the user ID of the account you want to unblock from Bot Maker:', backKeyboard);
         await User.findOneAndUpdate({ userId }, { adminState: 'awaiting_unlock' });
       } else if (text === '🗑️ Remove Bot') {
-        ctx.reply('🗑️ Enter the bot token of the bot you want to remove from Bot Maker:', cancelKeyboard);
+        ctx.reply('🗑️ Enter the bot token of the bot you want to remove from Bot Maker:', backKeyboard);
         await User.findOneAndUpdate({ userId }, { adminState: 'awaiting_remove_bot' });
       } else if (text === '↩️ Back') {
         ctx.reply('↩️ Back to main menu.', mainMenu);
@@ -443,13 +435,13 @@ makerBot.on('text', async (ctx) => {
 
     // Handle Broadcast User Input
     else if (userId === OWNER_ID && user.adminState === 'awaiting_broadcast_user') {
-      if (text === 'Cancel') {
+      if (text === 'Back') {
         ctx.reply('↩️ Broadcast cancelled.', ownerAdminPanel);
         await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
         return;
       }
 
-      const targetUsers = await User.find({ isBlocked: false });
+      const targetUsers = await User.find();
       const { successCount, failCount } = await broadcastMessage(makerBot, message, targetUsers, userId);
 
       ctx.reply(
@@ -463,7 +455,7 @@ makerBot.on('text', async (ctx) => {
 
     // Handle Broadcast Sub Input
     else if (userId === OWNER_ID && user.adminState === 'awaiting_broadcast_sub') {
-      if (text === 'Cancel') {
+      if (text === 'Back') {
         ctx.reply('↩️ Broadcast cancelled.', ownerAdminPanel);
         await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
         return;
@@ -482,7 +474,7 @@ makerBot.on('text', async (ctx) => {
 
     // Handle Block Input
     else if (userId === OWNER_ID && user.adminState === 'awaiting_block') {
-      if (text === 'Cancel') {
+      if (text === 'Back') {
         ctx.reply('↩️ Block action cancelled.', ownerAdminPanel);
         await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
         return;
@@ -490,12 +482,12 @@ makerBot.on('text', async (ctx) => {
 
       const targetUserId = text.trim();
       if (!/^\d+$/.test(targetUserId)) {
-        ctx.reply('❌ Invalid user ID. Please provide a numeric user ID (only numbers).', cancelKeyboard);
+        ctx.reply('❌ Invalid user ID. Please provide a numeric user ID (only numbers).', backKeyboard);
         return;
       }
 
       if (targetUserId === OWNER_ID) {
-        ctx.reply('❌ You cannot block yourself.', cancelKeyboard);
+        ctx.reply('❌ You cannot block yourself.', backKeyboard);
         return;
       }
 
@@ -513,7 +505,7 @@ makerBot.on('text', async (ctx) => {
 
     // Handle Unlock Input
     else if (userId === OWNER_ID && user.adminState === 'awaiting_unlock') {
-      if (text === 'Cancel') {
+      if (text === 'Back') {
         ctx.reply('↩️ Unlock action cancelled.', ownerAdminPanel);
         await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
         return;
@@ -521,7 +513,7 @@ makerBot.on('text', async (ctx) => {
 
       const targetUserId = text.trim();
       if (!/^\d+$/.test(targetUserId)) {
-        ctx.reply('❌ Invalid user ID. Please provide a numeric user ID (only numbers).', cancelKeyboard);
+        ctx.reply('❌ Invalid user ID. Please provide a numeric user ID (only numbers).', backKeyboard);
         return;
       }
 
@@ -539,7 +531,7 @@ makerBot.on('text', async (ctx) => {
 
     // Handle Remove Bot Input
     else if (userId === OWNER_ID && user.adminState === 'awaiting_remove_bot') {
-      if (text === 'Cancel') {
+      if (text === 'Back') {
         ctx.reply('↩️ Remove bot action cancelled.', ownerAdminPanel);
         await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
         return;
