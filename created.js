@@ -34,7 +34,7 @@ const BotUserSchema = new mongoose.Schema({
   isBlocked: { type: Boolean, default: false },
   username: { type: String },
   referredBy: { type: String, default: 'None' },
-  isFirstStart: { type: Boolean, default: true }, // Added to track first start
+  isFirstStart: { type: Boolean, default: true },
 });
 
 BotUserSchema.index({ botToken: 1, userId: 1 }, { unique: true });
@@ -42,7 +42,8 @@ BotUserSchema.index({ botToken: 1, hasJoined: 1 });
 
 const ChannelUrlSchema = new mongoose.Schema({
   botToken: { type: String, required: true, unique: true },
-  url: { type: String, default: 'https://t.me/Kali_Linux_BOTS' },
+  defaultUrl: { type: String, default: 'https://t.me/Kali_Linux_BOTS' }, // Constant default URL
+  customUrl: { type: String, default: null }, // Optional custom URL set by admin
 });
 
 const Bot = mongoose.model('Bot', BotSchema);
@@ -75,7 +76,10 @@ const cancelKeyboard = {
 // Helper Functions
 const getChannelUrl = async (botToken) => {
   const channelUrlDoc = await ChannelUrl.findOne({ botToken }).lean();
-  return channelUrlDoc?.url || 'https://t.me/Kali_Linux_BOTS';
+  return {
+    defaultUrl: channelUrlDoc?.defaultUrl || 'https://t.me/Kali_Linux_BOTS',
+    customUrl: channelUrlDoc?.customUrl || null,
+  };
 };
 
 const broadcastMessage = async (bot, message, targetUsers, adminId) => {
@@ -186,7 +190,6 @@ module.exports = async (req, res) => {
                           `📊 Total Users of Bot: ${totalUsers}`;
       await bot.telegram.sendMessage(botInfo.creatorId, notification);
 
-      // Update isFirstStart to false after sending the notification
       botUser.isFirstStart = false;
     }
 
@@ -198,7 +201,7 @@ module.exports = async (req, res) => {
       return res.status(200).json({ ok: true });
     }
 
-    const channelUrl = await getChannelUrl(botToken);
+    const { defaultUrl, customUrl } = await getChannelUrl(botToken);
 
     // Handle Messages
     if (update.message) {
@@ -210,14 +213,26 @@ module.exports = async (req, res) => {
         if (botUser.hasJoined) {
           await bot.telegram.sendMessage(chatId, 'Hi, how are you?');
         } else {
-          await bot.telegram.sendMessage(chatId, 'Please join our channel and click on Joined button to proceed.', {
+          // Prepare inline keyboard with buttons based on available URLs
+          const inlineKeyboard = [];
+          // Always add the default URL button
+          inlineKeyboard.push([
+            { text: 'Join Channel (Main)', url: defaultUrl },
+          ]);
+          // Add custom URL button if it exists
+          if (customUrl) {
+            inlineKeyboard.push([
+              { text: 'Join Channel (Custom)', url: customUrl },
+            ]);
+          }
+          // Add the "Joined" button
+          inlineKeyboard.push([
+            { text: 'Joined', callback_data: 'joined' },
+          ]);
+
+          await bot.telegram.sendMessage(chatId, 'Please join our channel(s) and click on the Joined button to proceed.', {
             reply_markup: {
-              inline_keyboard: [
-                [
-                  { text: 'Join Channel', url: channelUrl },
-                  { text: 'Joined', callback_data: 'joined' },
-                ],
-              ],
+              inline_keyboard: inlineKeyboard,
             },
           });
         }
@@ -241,7 +256,8 @@ module.exports = async (req, res) => {
           const message = `📊 Statistics for @${botInfo.username}\n\n` +
                          `👥 Total Users: ${userCount}\n` +
                          `📅 Bot Created: ${createdAt}\n` +
-                         `🔗 Channel URL: ${channelUrl}`;
+                         `🔗 Main Channel URL: ${defaultUrl}\n` +
+                         (customUrl ? `🔗 Custom Channel URL: ${customUrl}` : '🔗 Custom Channel URL: Not set');
           await bot.telegram.sendMessage(chatId, message, adminPanel);
         } else if (text === '📍 Broadcast') {
           const userCount = await BotUser.countDocuments({ botToken, hasJoined: true });
@@ -254,8 +270,9 @@ module.exports = async (req, res) => {
           }
         } else if (text === '🔗 Set Channel URL') {
           await bot.telegram.sendMessage(chatId,
-            `🔗 Current Channel URL:\n${channelUrl}\n\n` +
-            `Enter the new channel URL (e.g., https://t.me/your_channel):`,
+            `🔗 Main Channel URL (Constant):\n${defaultUrl}\n\n` +
+            `🔗 Custom Channel URL:\n${customUrl || 'Not set'}\n\n` +
+            `Enter the custom channel URL to add as a second join button (e.g., https://t.me/your_channel):`,
             cancelKeyboard
           );
           botUser.adminState = 'awaiting_channel';
@@ -330,11 +347,11 @@ module.exports = async (req, res) => {
 
         await ChannelUrl.findOneAndUpdate(
           { botToken },
-          { botToken, url: correctedUrl },
+          { botToken, defaultUrl: 'https://t.me/Kali_Linux_BOTS', customUrl: correctedUrl },
           { upsert: true }
         );
 
-        await bot.telegram.sendMessage(chatId, `✅ Channel URL has been set to:\n${correctedUrl}`, adminPanel);
+        await bot.telegram.sendMessage(chatId, `✅ Custom Channel URL has been set to:\n${correctedUrl}\nThe main channel URL remains:\n${defaultUrl}`, adminPanel);
         botUser.adminState = 'admin_panel';
         await botUser.save();
       }
@@ -413,7 +430,7 @@ module.exports = async (req, res) => {
           await bot.telegram.sendDocument(chatId, message.document.file_id, { caption: message.caption || '' });
         } else if (message.video) {
           await bot.telegram.sendVideo(chatId, message.video.file_id, { caption: message.caption || '' });
-        } else if (message.audio) {
+        } createdAt if (message.audio) {
           await bot.telegram.sendAudio(chatId, message.audio.file_id, { caption: message.caption || '' });
         } else if (message.voice) {
           await bot.telegram.sendVoice(chatId, message.voice.file_id);
