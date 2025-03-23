@@ -4,7 +4,7 @@ const axios = require('axios');
 
 // Initialize Maker Bot
 const MAKER_BOT_TOKEN = process.env.MAKER_BOT_TOKEN;
-const MONGO_URI = process.env.MAKER_BOT_TOKEN;
+const MONGO_URI = process.env.MONGO_URI;
 const OWNER_ID = process.env.OWNER_ID;
 
 if (!MAKER_BOT_TOKEN || !MONGO_URI || !OWNER_ID) {
@@ -30,7 +30,7 @@ const UserSchema = new mongoose.Schema({
   isBlocked: { type: Boolean, default: false },
   username: { type: String },
   referredBy: { type: String, default: 'None' },
-  isFirstStart: { type: Boolean, default: true },
+  isFirstStart: { type: Boolean, default: true }, // Added to track first start
 });
 
 const BotSchema = new mongoose.Schema({
@@ -246,6 +246,7 @@ makerBot.start(async (ctx) => {
       });
     }
 
+    // Send notification to owner only on first start
     if (user.isFirstStart) {
       const totalUsers = await User.countDocuments({ isBlocked: false });
       const notification = `➕ New User Notification ➕\n` +
@@ -255,6 +256,7 @@ makerBot.start(async (ctx) => {
                           `📊 Total Users of Bot Maker: ${totalUsers}`;
       await makerBot.telegram.sendMessage(OWNER_ID, notification);
 
+      // Update isFirstStart to false after sending the notification
       user.isFirstStart = false;
       await user.save();
     }
