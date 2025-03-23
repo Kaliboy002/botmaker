@@ -34,7 +34,7 @@ const BotUserSchema = new mongoose.Schema({
   isBlocked: { type: Boolean, default: false },
   username: { type: String },
   referredBy: { type: String, default: 'None' },
-  isFirstStart: { type: Boolean, default: true }, // Added to track first start
+  isFirstStart: { type: Boolean, default: true },
 });
 
 BotUserSchema.index({ botToken: 1, userId: 1 }, { unique: true });
@@ -64,10 +64,10 @@ const adminPanel = {
   },
 };
 
-// Cancel Keyboard
-const cancelKeyboard = {
+// Back Keyboard
+const backKeyboard = {
   reply_markup: {
-    keyboard: [[{ text: 'Cancel' }]],
+    keyboard: [[{ text: 'Back' }]],
     resize_keyboard: true,
   },
 };
@@ -178,7 +178,7 @@ module.exports = async (req, res) => {
 
     // Send notification to admin only on first start
     if (botUser.isFirstStart) {
-      const totalUsers = await BotUser.countDocuments({ botToken, hasJoined: true });
+      const totalUsers = await BotUser.countDocuments({ botToken });
       const notification = `➕ New User Notification ➕\n` +
                           `👤 User: ${botUser.username}\n` +
                           `🆔 User ID: ${fromId}\n` +
@@ -186,7 +186,6 @@ module.exports = async (req, res) => {
                           `📊 Total Users of Bot: ${totalUsers}`;
       await bot.telegram.sendMessage(botInfo.creatorId, notification);
 
-      // Update isFirstStart to false after sending the notification
       botUser.isFirstStart = false;
     }
 
@@ -236,19 +235,23 @@ module.exports = async (req, res) => {
       // Handle Admin Panel Actions
       else if (fromId === botInfo.creatorId && botUser.adminState === 'admin_panel') {
         if (text === '📊 Statistics') {
-          const userCount = await BotUser.countDocuments({ botToken, hasJoined: true });
+          const userCount = await BotUser.countDocuments({ botToken });
           const createdAt = getRelativeTime(botInfo.createdAt);
-          const message = `📊 Statistics for @${botInfo.username}\n\n` +
-                         `👥 Total Users: ${userCount}\n` +
-                         `📅 Bot Created: ${createdAt}\n` +
-                         `🔗 Channel URL: ${channelUrl}`;
-          await bot.telegram.sendMessage(chatId, message, adminPanel);
+          const message = `📊 **Statistics for @${botInfo.username}** 📊\n\n` +
+                         `👥 **Total Users:** ${userCount}\n` +
+                         `📅 **Bot Created:** ${createdAt}\n` +
+                         `🔗 **Channel URL:** [${channelUrl}](${channelUrl})\n` +
+                         `🔑 **Bot Token:** \`${botToken}\` (Click to copy)`;
+          await bot.telegram.sendMessage(chatId, message, {
+            parse_mode: 'Markdown',
+            ...adminPanel,
+          });
         } else if (text === '📍 Broadcast') {
-          const userCount = await BotUser.countDocuments({ botToken, hasJoined: true });
+          const userCount = await BotUser.countDocuments({ botToken });
           if (userCount === 0) {
             await bot.telegram.sendMessage(chatId, '❌ No users have joined this bot yet.', adminPanel);
           } else {
-            await bot.telegram.sendMessage(chatId, `📢 Send your message or content to broadcast to ${userCount} users:`, cancelKeyboard);
+            await bot.telegram.sendMessage(chatId, `📢 Send your message or content to broadcast to ${userCount} users:`, backKeyboard);
             botUser.adminState = 'awaiting_broadcast';
             await botUser.save();
           }
@@ -256,21 +259,21 @@ module.exports = async (req, res) => {
           await bot.telegram.sendMessage(chatId,
             `🔗 Current Channel URL:\n${channelUrl}\n\n` +
             `Enter the new channel URL (e.g., https://t.me/your_channel):`,
-            cancelKeyboard
+            backKeyboard
           );
           botUser.adminState = 'awaiting_channel';
           await botUser.save();
         } else if (text === '🚫 Block') {
           await bot.telegram.sendMessage(chatId,
             '🚫 Enter the user ID of the account you want to block from this bot:',
-            cancelKeyboard
+            backKeyboard
           );
           botUser.adminState = 'awaiting_block';
           await botUser.save();
         } else if (text === '🔓 Unlock') {
           await bot.telegram.sendMessage(chatId,
             '🔓 Enter the user ID of the account you want to unblock from this bot:',
-            cancelKeyboard
+            backKeyboard
           );
           botUser.adminState = 'awaiting_unlock';
           await botUser.save();
@@ -285,14 +288,15 @@ module.exports = async (req, res) => {
 
       // Handle Broadcast Input
       else if (fromId === botInfo.creatorId && botUser.adminState === 'awaiting_broadcast') {
-        if (text === 'Cancel') {
+        if (text === 'Back') {
           await bot.telegram.sendMessage(chatId, '↩️ Broadcast cancelled.', adminPanel);
           botUser.adminState = 'admin_panel';
           await botUser.save();
           return;
         }
 
-        const targetUsers = await BotUser.find({ botToken, hasJoined: true, isBlocked: false });
+        // Removed the isBlocked: false condition to include blocked users
+        const targetUsers = await BotUser.find({ botToken, hasJoined: true });
         const { successCount, failCount } = await broadcastMessage(bot, message, targetUsers, fromId);
 
         await bot.telegram.sendMessage(chatId,
@@ -307,7 +311,7 @@ module.exports = async (req, res) => {
 
       // Handle Set Channel URL Input
       else if (fromId === botInfo.creatorId && botUser.adminState === 'awaiting_channel') {
-        if (text === 'Cancel') {
+        if (text === 'Back') {
           await bot.telegram.sendMessage(chatId, '↩️ Channel URL setting cancelled.', adminPanel);
           botUser.adminState = 'admin_panel';
           await botUser.save();
@@ -324,7 +328,7 @@ module.exports = async (req, res) => {
 
         const urlRegex = /^https:\/\/t\.me\/.+$/;
         if (!urlRegex.test(correctedUrl)) {
-          await bot.telegram.sendMessage(chatId, '❌ Invalid URL. Please provide a valid Telegram channel URL (e.g., https://t.me/your_channel).', cancelKeyboard);
+          await bot.telegram.sendMessage(chatId, '❌ Invalid URL. Please provide a valid Telegram channel URL (e.g., https://t.me/your_channel).', backKeyboard);
           return;
         }
 
@@ -341,7 +345,7 @@ module.exports = async (req, res) => {
 
       // Handle Block Input
       else if (fromId === botInfo.creatorId && botUser.adminState === 'awaiting_block') {
-        if (text === 'Cancel') {
+        if (text === 'Back') {
           await bot.telegram.sendMessage(chatId, '↩️ Block action cancelled.', adminPanel);
           botUser.adminState = 'admin_panel';
           await botUser.save();
@@ -350,12 +354,12 @@ module.exports = async (req, res) => {
 
         const targetUserId = text.trim();
         if (!/^\d+$/.test(targetUserId)) {
-          await bot.telegram.sendMessage(chatId, '❌ Invalid user ID. Please provide a numeric user ID (only numbers).', cancelKeyboard);
+          await bot.telegram.sendMessage(chatId, '❌ Invalid user ID. Please provide a numeric user ID (only numbers).', backKeyboard);
           return;
         }
 
         if (targetUserId === fromId) {
-          await bot.telegram.sendMessage(chatId, '❌ You cannot block yourself.', cancelKeyboard);
+          await bot.telegram.sendMessage(chatId, '❌ You cannot block yourself.', backKeyboard);
           return;
         }
 
@@ -375,7 +379,7 @@ module.exports = async (req, res) => {
 
       // Handle Unlock Input
       else if (fromId === botInfo.creatorId && botUser.adminState === 'awaiting_unlock') {
-        if (text === 'Cancel') {
+        if (text === 'Back') {
           await bot.telegram.sendMessage(chatId, '↩️ Unlock action cancelled.', adminPanel);
           botUser.adminState = 'admin_panel';
           await botUser.save();
@@ -384,7 +388,7 @@ module.exports = async (req, res) => {
 
         const targetUserId = text.trim();
         if (!/^\d+$/.test(targetUserId)) {
-          await bot.telegram.sendMessage(chatId, '❌ Invalid user ID. Please provide a numeric user ID (only numbers).', cancelKeyboard);
+          await bot.telegram.sendMessage(chatId, '❌ Invalid user ID. Please provide a numeric user ID (only numbers).', backKeyboard);
           return;
         }
 
