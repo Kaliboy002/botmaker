@@ -30,7 +30,7 @@ const UserSchema = new mongoose.Schema({
   isBlocked: { type: Boolean, default: false },
   username: { type: String },
   referredBy: { type: String, default: 'None' },
-  isFirstStart: { type: Boolean, default: true }, // Track first start
+  isFirstStart: { type: Boolean, default: true }, // Added to track first start
 });
 
 const BotSchema = new mongoose.Schema({
@@ -88,6 +88,13 @@ const ownerAdminPanel = {
 const cancelKeyboard = {
   reply_markup: {
     keyboard: [[{ text: 'Cancel' }]],
+    resize_keyboard: true,
+  },
+};
+
+const backKeyboard = {
+  reply_markup: {
+    keyboard: [[{ text: 'Back' }]],
     resize_keyboard: true,
   },
 };
@@ -237,7 +244,10 @@ makerBot.start(async (ctx) => {
         referredBy,
         isFirstStart: true,
       });
+    }
 
+    // Send notification to owner only on first start
+    if (user.isFirstStart) {
       const totalUsers = await User.countDocuments({ isBlocked: false });
       const notification = `➕ New User Notification ➕\n` +
                           `👤 User: ${username}\n` +
@@ -245,20 +255,10 @@ makerBot.start(async (ctx) => {
                           `⭐ Referred By: ${referredBy}\n` +
                           `📊 Total Users of Bot Maker: ${totalUsers}`;
       await makerBot.telegram.sendMessage(OWNER_ID, notification);
-    } else if (user.isFirstStart) {
-      await User.findOneAndUpdate(
-        { userId },
-        { isFirstStart: false },
-        { new: true }
-      );
 
-      const totalUsers = await User.countDocuments({ isBlocked: false });
-      const notification = `➕ New User Notification ➕\n` +
-                          `👤 User: ${username}\n` +
-                          `🆔 User ID: ${userId}\n` +
-                          `⭐ Referred By: ${referredBy}\n` +
-                          `📊 Total Users of Bot Maker: ${totalUsers}`;
-      await makerBot.telegram.sendMessage(OWNER_ID, notification);
+      // Update isFirstStart to false after sending the notification
+      user.isFirstStart = false;
+      await user.save();
     }
 
     ctx.reply('Welcome to Bot Maker! Use the buttons below to create and manage your Telegram bots.', mainMenu);
@@ -278,12 +278,7 @@ makerBot.hears('🛠 Create Bot', async (ctx) => {
       return;
     }
 
-    ctx.reply('Send your bot token from @BotFather to make your bot:', {
-      reply_markup: {
-        keyboard: [[{ text: 'Back' }]],
-        resize_keyboard: true,
-      },
-    });
+    ctx.reply('Send your bot token from @BotFather to make your bot:', backKeyboard);
     await User.findOneAndUpdate({ userId }, { step: 'create_bot' });
   } catch (error) {
     console.error('Error in Create Bot:', error);
@@ -301,12 +296,7 @@ makerBot.hears('🗑️ Delete Bot', async (ctx) => {
       return;
     }
 
-    ctx.reply('Send your created bot token you want to delete:', {
-      reply_markup: {
-        keyboard: [[{ text: 'Back' }]],
-        resize_keyboard: true,
-      },
-    });
+    ctx.reply('Send your created bot token you want to delete:', backKeyboard);
     await User.findOneAndUpdate({ userId }, { step: 'delete_bot' });
   } catch (error) {
     console.error('Error in Delete Bot:', error);
@@ -373,13 +363,6 @@ makerBot.on('text', async (ctx) => {
 
     if (user.isBlocked) {
       ctx.reply('🚫 You have been banned by the admin.');
-      return;
-    }
-
-    // Handle Back button early for create_bot and delete_bot
-    if (text === 'Back' && (user.step === 'create_bot' || user.step === 'delete_bot')) {
-      ctx.reply('↩️ Back to main menu.', mainMenu);
-      await User.findOneAndUpdate({ userId }, { step: 'none', adminState: 'none' });
       return;
     }
 
@@ -518,7 +501,8 @@ makerBot.on('text', async (ctx) => {
 
       const targetUser = await User.findOne({ userId: targetUserId });
       if (!targetUser) {
-        ctx.reply('❌ User not found. Please ensure the user ID is correct.', cancelKeyboard);
+        ctx.reply('❌ User not found.', ownerAdminPanel);
+        await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
         return;
       }
 
@@ -543,7 +527,8 @@ makerBot.on('text', async (ctx) => {
 
       const targetUser = await User.findOne({ userId: targetUserId });
       if (!targetUser) {
-        ctx.reply('❌ User not found. Please ensure the user ID is correct.', cancelKeyboard);
+        ctx.reply('❌ User not found.', ownerAdminPanel);
+        await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
         return;
       }
 
@@ -563,7 +548,8 @@ makerBot.on('text', async (ctx) => {
       const botToken = text.trim();
       const bot = await Bot.findOne({ token: botToken });
       if (!bot) {
-        ctx.reply('❌ Bot token not found.', cancelKeyboard);
+        ctx.reply('❌ Bot token not found.', ownerAdminPanel);
+        await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
         return;
       }
 
@@ -578,11 +564,15 @@ makerBot.on('text', async (ctx) => {
 
     // Handle Create/Delete Bot Input
     else if (user.step === 'create_bot') {
+      if (text === 'Back') {
+        ctx.reply('↩️ Back to main menu.', mainMenu);
+        await User.findOneAndUpdate({ userId }, { step: 'none', adminState: 'none' });
+        return;
+      }
+
       const botInfo = await validateBotToken(text);
       if (!botInfo) {
-        ctx.reply('❌ Invalid bot token. Please try again:', {
-          reply_markup: { keyboard: [[{ text: 'Back' }]], resize_keyboard: true },
-        });
+        ctx.reply('❌ Invalid bot token. Please try again:', backKeyboard);
         return;
       }
 
@@ -624,11 +614,16 @@ makerBot.on('text', async (ctx) => {
       );
       await User.findOneAndUpdate({ userId }, { step: 'none' });
     } else if (user.step === 'delete_bot') {
+      if (text === 'Back') {
+        ctx.reply('↩️ Back to main menu.', mainMenu);
+        await User.findOneAndUpdate({ userId }, { step: 'none', adminState: 'none' });
+        return;
+      }
+
       const bot = await Bot.findOne({ token: text });
       if (!bot) {
-        ctx.reply('❌ Bot token not found.', {
-          reply_markup: { keyboard: [[{ text: 'Back' }]], resize_keyboard: true },
-        });
+        ctx.reply('❌ Bot token not found.', mainMenu);
+        await User.findOneAndUpdate({ userId }, { step: 'none' });
         return;
       }
 
@@ -639,6 +634,9 @@ makerBot.on('text', async (ctx) => {
 
       ctx.reply('✅ Bot has been deleted and disconnected from Bot Maker.', mainMenu);
       await User.findOneAndUpdate({ userId }, { step: 'none' });
+    } else if (text === 'Back') {
+      ctx.reply('↩️ Back to main menu.', mainMenu);
+      await User.findOneAndUpdate({ userId }, { step: 'none', adminState: 'none' });
     }
   } catch (error) {
     console.error('Error in text handler:', error);
