@@ -376,6 +376,7 @@ makerBot.on('text', async (ctx) => {
     if (userId === OWNER_ID && user.adminState === 'admin_panel') {
       if (text === '📊 Statistics') {
         const totalUsers = await User.countDocuments({ isBlocked: false });
+        const totalBlockedUsers = await User.countDocuments({ isBlocked: true }); // Added for enhanced stats
         const totalBots = await Bot.countDocuments();
         const topBots = await Bot.aggregate([
           {
@@ -397,6 +398,7 @@ makerBot.on('text', async (ctx) => {
 
         let statsMessage = `📊 Bot Maker Statistics\n\n` +
                           `👥 Total Users: ${totalUsers}\n` +
+                          `🚫 Total Blocked Users: ${totalBlockedUsers}\n` +
                           `🤖 Total Bots Created: ${totalBots}\n\n` +
                           `🏆 Top 20 Bots by User Count:\n\n`;
 
