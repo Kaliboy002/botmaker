@@ -34,7 +34,7 @@ const BotUserSchema = new mongoose.Schema({
   isBlocked: { type: Boolean, default: false },
   username: { type: String },
   referredBy: { type: String, default: 'None' },
-  isFirstInteraction: { type: Boolean, default: true }, // Added to track first interaction
+  isFirstStart: { type: Boolean, default: true }, // Added to track first start
 });
 
 BotUserSchema.index({ botToken: 1, userId: 1 }, { unique: true });
@@ -172,40 +172,22 @@ module.exports = async (req, res) => {
         isBlocked: false,
         username,
         referredBy,
-        isFirstInteraction: true,
+        isFirstStart: true,
       });
+    }
 
-      // Send notification to admin (creator of the bot) only on first interaction
+    // Send notification to admin only on first start
+    if (botUser.isFirstStart) {
       const totalUsers = await BotUser.countDocuments({ botToken, hasJoined: true });
       const notification = `➕ New User Notification ➕\n` +
-                          `👤 User: ${username}\n` +
+                          `👤 User: ${botUser.username}\n` +
                           `🆔 User ID: ${fromId}\n` +
-                          `⭐ Referred By: ${referredBy}\n` +
+                          `⭐ Referred By: ${botUser.referredBy}\n` +
                           `📊 Total Users of Bot: ${totalUsers}`;
       await bot.telegram.sendMessage(botInfo.creatorId, notification);
 
-      // Mark as not first interaction
-      await BotUser.findOneAndUpdate(
-        { botToken, userId: fromId },
-        { isFirstInteraction: false },
-        { new: true }
-      );
-    } else if (botUser.isFirstInteraction) {
-      const username = update.message?.from?.username ? `@${update.message.from.username}` : update.message?.from?.first_name;
-      const referredBy = update.message?.text?.split(' ')[1] || 'None';
-      const totalUsers = await BotUser.countDocuments({ botToken, hasJoined: true });
-      const notification = `➕ New User Notification ➕\n` +
-                          `👤 User: ${username}\n` +
-                          `🆔 User ID: ${fromId}\n` +
-                          `⭐ Referred By: ${referredBy}\n` +
-                          `📊 Total Users of Bot: ${totalUsers}`;
-      await bot.telegram.sendMessage(botInfo.creatorId, notification);
-
-      await BotUser.findOneAndUpdate(
-        { botToken, userId: fromId },
-        { isFirstInteraction: false },
-        { new: true }
-      );
+      // Update isFirstStart to false after sending the notification
+      botUser.isFirstStart = false;
     }
 
     botUser.lastInteraction = Math.floor(Date.now() / 1000);
@@ -222,16 +204,6 @@ module.exports = async (req, res) => {
     if (update.message) {
       const message = update.message;
       const text = message.text;
-
-      // Handle Back button early for admin states
-      if (text === '↩️ Back' && botUser.adminState !== 'none' && fromId === botInfo.creatorId) {
-        await bot.telegram.sendMessage(chatId, '↩️ Returned to normal mode.', {
-          reply_markup: { remove_keyboard: true },
-        });
-        botUser.adminState = 'none';
-        await botUser.save();
-        return res.status(200).json({ ok: true });
-      }
 
       // /start Command
       if (text === '/start') {
@@ -301,6 +273,12 @@ module.exports = async (req, res) => {
             cancelKeyboard
           );
           botUser.adminState = 'awaiting_unlock';
+          await botUser.save();
+        } else if (text === '↩️ Back') {
+          await bot.telegram.sendMessage(chatId, '↩️ Returned to normal mode.', {
+            reply_markup: { remove_keyboard: true },
+          });
+          botUser.adminState = 'none';
           await botUser.save();
         }
       }
@@ -383,7 +361,9 @@ module.exports = async (req, res) => {
 
         const targetUser = await BotUser.findOne({ botToken, userId: targetUserId });
         if (!targetUser) {
-          await bot.telegram.sendMessage(chatId, '❌ User not found in this bot. Please ensure the user ID is correct.', cancelKeyboard);
+          await bot.telegram.sendMessage(chatId, '❌ User not found in this bot.', adminPanel);
+          botUser.adminState = 'admin_panel';
+          await botUser.save();
           return;
         }
 
@@ -410,7 +390,9 @@ module.exports = async (req, res) => {
 
         const targetUser = await BotUser.findOne({ botToken, userId: targetUserId });
         if (!targetUser) {
-          await bot.telegram.sendMessage(chatId, '❌ User not found in this bot. Please ensure the user ID is correct.', cancelKeyboard);
+          await bot.telegram.sendMessage(chatId, '❌ User not found in this bot.', adminPanel);
+          botUser.adminState = 'admin_panel';
+          await botUser.save();
           return;
         }
 
