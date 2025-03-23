@@ -206,6 +206,23 @@ module.exports = async (req, res) => {
 
       // /start Command
       if (text === '/start') {
+        // If in admin state, treat /start as Back
+        if (fromId === botInfo.creatorId && botUser.adminState !== 'none') {
+          if (['awaiting_broadcast', 'awaiting_channel', 'awaiting_block', 'awaiting_unlock'].includes(botUser.adminState)) {
+            await bot.telegram.sendMessage(chatId, '↩️ Action cancelled.', adminPanel);
+            botUser.adminState = 'admin_panel';
+            await botUser.save();
+            return res.status(200).json({ ok: true });
+          } else if (botUser.adminState === 'admin_panel') {
+            await bot.telegram.sendMessage(chatId, '↩️ Returned to normal mode.', {
+              reply_markup: { remove_keyboard: true },
+            });
+            botUser.adminState = 'none';
+            await botUser.save();
+            return res.status(200).json({ ok: true });
+          }
+        }
+
         if (botUser.hasJoined) {
           await bot.telegram.sendMessage(chatId, 'Hi, how are you?');
         } else {
@@ -295,8 +312,8 @@ module.exports = async (req, res) => {
           return;
         }
 
-        // Removed the isBlocked: false condition to include blocked users
-        const targetUsers = await BotUser.find({ botToken, hasJoined: true });
+        // Removed hasJoined condition to include all users who started the bot
+        const targetUsers = await BotUser.find({ botToken });
         const { successCount, failCount } = await broadcastMessage(bot, message, targetUsers, fromId);
 
         await bot.telegram.sendMessage(chatId,
@@ -355,7 +372,7 @@ module.exports = async (req, res) => {
         const targetUserId = text.trim();
         if (!/^\d+$/.test(targetUserId)) {
           await bot.telegram.sendMessage(chatId, '❌ Invalid user ID. Please provide a numeric user ID (only numbers).', backKeyboard);
-          return;
+          return; // Simply return to allow further input, including Back
         }
 
         if (targetUserId === fromId) {
@@ -389,7 +406,7 @@ module.exports = async (req, res) => {
         const targetUserId = text.trim();
         if (!/^\d+$/.test(targetUserId)) {
           await bot.telegram.sendMessage(chatId, '❌ Invalid user ID. Please provide a numeric user ID (only numbers).', backKeyboard);
-          return;
+          return; // Simply return to allow further input, including Back
         }
 
         const targetUser = await BotUser.findOne({ botToken, userId: targetUserId });
