@@ -79,6 +79,7 @@ const ownerAdminPanel = {
       [{ text: '🚫 Block' }],
       [{ text: '🔓 Unlock' }],
       [{ text: '🗑️ Remove Bot' }],
+      [{ text: '🔄 Recover Bot' }], // Added Recover Bot button
       [{ text: '↩️ Back' }],
     ],
     resize_keyboard: true,
@@ -122,6 +123,19 @@ const deleteWebhook = async (token) => {
     return response.data.ok;
   } catch (error) {
     console.error('Error deleting webhook:', error.message);
+    return false;
+  }
+};
+
+const recoverBot = async (token) => {
+  try {
+    // First, delete the existing webhook
+    await deleteWebhook(token);
+    // Then, set a new webhook
+    const webhookSet = await setWebhook(token);
+    return webhookSet;
+  } catch (error) {
+    console.error('Error recovering bot:', error.message);
     return false;
   }
 };
@@ -186,8 +200,8 @@ const broadcastSubMessage = async (message, adminId) => {
   for (const botInfo of bots) {
     const botToken = botInfo.token;
     const bot = new Telegraf(botToken);
-    // Removed the isBlocked: false condition to include blocked users
-    const targetUsers = await BotUser.find({ botToken, hasJoined: true }).lean();
+    // Removed hasJoined condition to include all users who started the bot
+    const targetUsers = await BotUser.find({ botToken }).lean();
 
     if (targetUsers.length === 0) continue;
 
@@ -307,16 +321,24 @@ makerBot.hears('📋 My Bots', async (ctx) => {
     }
 
     const userBots = await Bot.find({ creatorId: userId });
-    let message = '📋 Your Bots:\n\n';
+    let message = `📋 **Your Bots** 📋\n\n`;
     if (userBots.length === 0) {
       message += 'You have not created any bots yet.';
     } else {
-      userBots.forEach((bot) => {
+      for (const bot of userBots) {
+        const userCount = await BotUser.countDocuments({ botToken: bot.token });
         const createdAt = getRelativeTime(bot.createdAt);
-        message += `🤖 @${bot.username}\nCreated: ${createdAt}\n\n`;
-      });
+        message += `🤖 **Bot Username:** @${bot.username}\n` +
+                  `🔑 **Token:** \`${bot.token}\` (Click to copy)\n` +
+                  `👥 **Total Users:** ${userCount}\n` +
+                  `👤 **Creator:** @${bot.creatorUsername || 'Unknown'}\n` +
+                  `📅 **Created:** ${createdAt}\n\n`;
+      }
     }
-    ctx.reply(message, mainMenu);
+    ctx.reply(message, {
+      parse_mode: 'Markdown',
+      ...mainMenu,
+    });
   } catch (error) {
     console.error('Error in My Bots:', error);
     ctx.reply('❌ An error occurred. Please try again.', mainMenu);
@@ -381,10 +403,10 @@ makerBot.on('text', async (ctx) => {
           { $limit: 20 },
         ]);
 
-        let statsMessage = `📊 Bot Maker Statistics\n\n` +
-                          `👥 Total Users: ${totalUsers}\n` +
-                          `🤖 Total Bots Created: ${totalBots}\n\n` +
-                          `🏆 Top 20 Bots by User Count:\n\n`;
+        let statsMessage = `📊 **Bot Maker Statistics** 📊\n\n` +
+                          `👥 **Total Users:** ${totalUsers}\n` +
+                          `🤖 **Total Bots Created:** ${totalBots}\n\n` +
+                          `🏆 **Top 20 Bots by User Count:**\n\n`;
 
         if (topBots.length === 0) {
           statsMessage += 'No bots created yet.';
@@ -392,15 +414,18 @@ makerBot.on('text', async (ctx) => {
           topBots.forEach((bot, index) => {
             const createdAt = getRelativeTime(bot.createdAt);
             statsMessage += `🔹 #${index + 1}\n` +
-                           `Bot: @${bot.username}\n` +
-                           `Creator: @${bot.creatorUsername || 'Unknown'}\n` +
-                           `Token: ${bot.token}\n` +
-                           `Users: ${bot.userCount}\n` +
-                           `Created: ${createdAt}\n\n`;
+                           `**Bot:** @${bot.username}\n` +
+                           `**Creator:** @${bot.creatorUsername || 'Unknown'}\n` +
+                           `**Token:** \`${bot.token}\` (Click to copy)\n` +
+                           `**Users:** ${bot.userCount}\n` +
+                           `**Created:** ${createdAt}\n\n`;
           });
         }
 
-        ctx.reply(statsMessage, ownerAdminPanel);
+        ctx.reply(statsMessage, {
+          parse_mode: 'Markdown',
+          ...ownerAdminPanel,
+        });
       } else if (text === '📢 Broadcast User') {
         const userCount = await User.countDocuments();
         if (userCount === 0) {
@@ -410,7 +435,7 @@ makerBot.on('text', async (ctx) => {
           await User.findOneAndUpdate({ userId }, { adminState: 'awaiting_broadcast_user' });
         }
       } else if (text === '📣 Broadcast Sub') {
-        const allBotUsers = await BotUser.find({ hasJoined: true }).distinct('userId');
+        const allBotUsers = await BotUser.find().distinct('userId');
         const userCount = allBotUsers.length;
         if (userCount === 0) {
           ctx.reply('❌ No users have joined any created bots yet.', ownerAdminPanel);
@@ -427,6 +452,9 @@ makerBot.on('text', async (ctx) => {
       } else if (text === '🗑️ Remove Bot') {
         ctx.reply('🗑️ Enter the bot token of the bot you want to remove from Bot Maker:', backKeyboard);
         await User.findOneAndUpdate({ userId }, { adminState: 'awaiting_remove_bot' });
+      } else if (text === '🔄 Recover Bot') {
+        ctx.reply('🔄 Enter the bot token of the bot you want to recover:', backKeyboard);
+        await User.findOneAndUpdate({ userId }, { adminState: 'awaiting_recover_bot' });
       } else if (text === '↩️ Back') {
         ctx.reply('↩️ Back to main menu.', mainMenu);
         await User.findOneAndUpdate({ userId }, { step: 'none', adminState: 'none' });
@@ -522,7 +550,7 @@ makerBot.on('text', async (ctx) => {
         ctx.reply('❌ User not found.', ownerAdminPanel);
         await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
         return;
-      }
+        }
 
       await User.findOneAndUpdate({ userId: targetUserId }, { isBlocked: false });
       ctx.reply(`✅ User ${targetUserId} has been unblocked from Bot Maker.`, ownerAdminPanel);
@@ -551,6 +579,31 @@ makerBot.on('text', async (ctx) => {
       await ChannelUrl.deleteOne({ botToken });
 
       ctx.reply(`✅ Bot @${bot.username} has been removed from Bot Maker.`, ownerAdminPanel);
+      await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
+    }
+
+    // Handle Recover Bot Input
+    else if (userId === OWNER_ID && user.adminState === 'awaiting_recover_bot') {
+      if (text === 'Back') {
+        ctx.reply('↩️ Recover bot action cancelled.', ownerAdminPanel);
+        await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
+        return;
+      }
+
+      const botToken = text.trim();
+      const bot = await Bot.findOne({ token: botToken });
+      if (!bot) {
+        ctx.reply('❌ Bot token not found.', ownerAdminPanel);
+        await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
+        return;
+      }
+
+      const recovered = await recoverBot(botToken);
+      if (recovered) {
+        ctx.reply(`✅ Bot @${bot.username} has been recovered successfully.`, ownerAdminPanel);
+      } else {
+        ctx.reply(`❌ Failed to recover bot @${bot.username}. Please try again or check the token.`, ownerAdminPanel);
+      }
       await User.findOneAndUpdate({ userId }, { adminState: 'admin_panel' });
     }
 
